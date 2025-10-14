@@ -177,15 +177,23 @@ class PolygonClient:
         # Return most recent quote
         return results[0]
 
-    def get_option_snapshot(self, ticker: str) -> dict[str, Any]:
+    def get_option_snapshot(self, ticker: str, as_of_date: str | None = None) -> dict[str, Any]:
         """Fetch snapshot of all options for underlying ticker.
         
         Args:
             ticker: Underlying stock ticker.
+            as_of_date: Historical date in YYYY-MM-DD format. If None, fetches current data.
         
         Returns:
             Snapshot data with all active option contracts.
         """
+        if as_of_date:
+            # Note: Historical snapshot endpoint may not be directly available
+            # Will fall back to aggregate bars for historical data
+            raise NotImplementedError(
+                "Historical option snapshots require using get_option_chain with as_of_date parameter"
+            )
+        
         endpoint = f"/v3/snapshot/options/{ticker.upper()}"
         response = self._make_request(endpoint)
         return response
@@ -195,16 +203,23 @@ class PolygonClient:
         ticker: str,
         expiry: str,
         include_greeks: bool = True,
+        as_of_date: str | None = None,
     ) -> list[OptionContract]:
         """Fetch complete option chain for a specific expiry.
         
         Args:
             ticker: Underlying stock ticker.
             expiry: Expiration date in ISO format.
-            include_greeks: If True, fetch Greeks (delta, gamma, etc).
+            include_greeks: If True, fetch Greeks (delta, gamma, etc) for each contract.
+            as_of_date: Historical date in YYYY-MM-DD format. If None, fetches current data.
         
         Returns:
             List of OptionContract objects with full market data.
+        
+        Note:
+            When include_greeks=True, this makes individual API calls per contract
+            to get Greeks data. This is slower but provides complete data.
+            Historical data (as_of_date) uses daily aggregate bars from Polygon.
         """
         # First get contract metadata
         contracts_meta = self.get_option_contracts(ticker, expiry)
@@ -212,73 +227,232 @@ class PolygonClient:
         if not contracts_meta:
             return []
         
-        # Fetch snapshot for all options (more efficient than individual quotes)
-        snapshot = self.get_option_snapshot(ticker)
-        snapshot_results = snapshot.get("results", [])
+        contracts: list[OptionContract] = []
         
-        # Build lookup for quick access
-        snapshot_map = {
-            result["details"]["contract_type"] + "_" + str(result["details"]["strike_price"]): result
-            for result in snapshot_results
-            if result.get("details", {}).get("expiration_date") == expiry
-        }
+        # Handle historical data differently
+        if as_of_date:
+            return self._get_historical_option_chain(ticker, expiry, contracts_meta, as_of_date, include_greeks)
+        
+        if include_greeks:
+            # Fetch individual contract snapshots to get Greeks
+            # This is slower but provides complete data including Greeks and IV
+            import time
+            
+            for meta in contracts_meta:
+                contract_ticker = meta.get("ticker", "")
+                contract_type = meta.get("contract_type", "").lower()
+                strike = float(meta.get("strike_price", 0))
+                
+                try:
+                    # Fetch individual contract snapshot with Greeks
+                    endpoint = f"/v3/snapshot/options/{ticker.upper()}/{contract_ticker}"
+                    response = self._make_request(endpoint)
+                    
+                    if "results" in response:
+                        result = response["results"]
+                        
+                        # Extract data
+                        day_data = result.get("day", {})
+                        greeks = result.get("greeks", {})
+                        
+                        contracts.append(
+                            OptionContract(
+                                ticker=ticker.upper(),
+                                contract_ticker=contract_ticker,
+                                expiry=expiry,
+                                strike=strike,
+                                option_type=contract_type,
+                                bid=day_data.get("close", 0.0),  # Use close as proxy for bid/ask
+                                ask=day_data.get("close", 0.0),
+                                last=day_data.get("close", 0.0),
+                                volume=day_data.get("volume", 0),
+                                open_interest=result.get("open_interest", 0),
+                                implied_volatility=result.get("implied_volatility"),
+                                delta=greeks.get("delta"),
+                                gamma=greeks.get("gamma"),
+                                theta=greeks.get("theta"),
+                                vega=greeks.get("vega"),
+                            )
+                        )
+                    
+                    # Small delay to avoid rate limits
+                    time.sleep(0.05)
+                    
+                except Exception as e:
+                    # Skip contracts that fail
+                    continue
+        else:
+            # Faster bulk fetch without Greeks
+            snapshot = self.get_option_snapshot(ticker)
+            snapshot_results = snapshot.get("results", [])
+            
+            # Build lookup for quick access
+            snapshot_map = {
+                result["details"]["contract_type"] + "_" + str(result["details"]["strike_price"]): result
+                for result in snapshot_results
+                if result.get("details", {}).get("expiration_date") == expiry
+            }
+            
+            for meta in contracts_meta:
+                contract_type = meta.get("contract_type", "").lower()
+                strike = float(meta.get("strike_price", 0))
+                contract_ticker = meta.get("ticker", "")
+                
+                # Try to find matching snapshot data
+                lookup_key = contract_type + "_" + str(strike)
+                snapshot_data = snapshot_map.get(lookup_key, {})
+                
+                # Extract quote data
+                quote = snapshot_data.get("last_quote", {})
+                day_data = snapshot_data.get("day", {})
+                
+                contracts.append(
+                    OptionContract(
+                        ticker=ticker.upper(),
+                        contract_ticker=contract_ticker,
+                        expiry=expiry,
+                        strike=strike,
+                        option_type=contract_type,
+                        bid=quote.get("bid", 0.0),
+                        ask=quote.get("ask", 0.0),
+                        last=snapshot_data.get("last_trade", {}).get("price", 0.0),
+                        volume=day_data.get("volume", 0),
+                        open_interest=snapshot_data.get("open_interest", 0),
+                        implied_volatility=None,
+                        delta=None,
+                        gamma=None,
+                        theta=None,
+                        vega=None,
+                    )
+                )
+        
+        return contracts
+
+    def _get_historical_option_chain(
+        self,
+        ticker: str,
+        expiry: str,
+        contracts_meta: list[dict[str, Any]],
+        as_of_date: str,
+        include_greeks: bool = True,
+    ) -> list[OptionContract]:
+        """Fetch historical option chain data for a specific date.
+        
+        Uses Polygon's aggregate bars endpoint for historical options data.
+        
+        Args:
+            ticker: Underlying stock ticker.
+            expiry: Expiration date.
+            contracts_meta: Contract metadata from get_option_contracts.
+            as_of_date: Historical date in YYYY-MM-DD format.
+            include_greeks: If True, attempts to fetch Greeks (may not be available historically).
+        
+        Returns:
+            List of OptionContract objects with historical market data.
+        """
+        import time
         
         contracts: list[OptionContract] = []
         
         for meta in contracts_meta:
+            contract_ticker = meta.get("ticker", "")
             contract_type = meta.get("contract_type", "").lower()
             strike = float(meta.get("strike_price", 0))
-            contract_ticker = meta.get("ticker", "")
             
-            # Try to find matching snapshot data
-            lookup_key = contract_type + "_" + str(strike)
-            snapshot_data = snapshot_map.get(lookup_key, {})
-            
-            # Extract quote data
-            quote = snapshot_data.get("last_quote", {})
-            greeks = snapshot_data.get("greeks", {}) if include_greeks else {}
-            day_data = snapshot_data.get("day", {})
-            
-            contracts.append(
-                OptionContract(
-                    ticker=ticker.upper(),
-                    contract_ticker=contract_ticker,
-                    expiry=expiry,
-                    strike=strike,
-                    option_type=contract_type,
-                    bid=quote.get("bid", 0.0),
-                    ask=quote.get("ask", 0.0),
-                    last=snapshot_data.get("last_trade", {}).get("price", 0.0),
-                    volume=day_data.get("volume", 0),
-                    open_interest=snapshot_data.get("open_interest", 0),
-                    implied_volatility=greeks.get("implied_volatility"),
-                    delta=greeks.get("delta"),
-                    gamma=greeks.get("gamma"),
-                    theta=greeks.get("theta"),
-                    vega=greeks.get("vega"),
-                )
-            )
+            try:
+                # Use aggregate bars endpoint for historical data
+                # Format: /v2/aggs/ticker/{optionsTicker}/range/{multiplier}/{timespan}/{from}/{to}
+                endpoint = f"/v2/aggs/ticker/{contract_ticker}/range/1/day/{as_of_date}/{as_of_date}"
+                response = self._make_request(endpoint)
+                
+                results = response.get("results", [])
+                
+                if results:
+                    bar = results[0]  # Should only be one day
+                    
+                    # Extract OHLC data
+                    open_price = bar.get("o", 0.0)
+                    high = bar.get("h", 0.0)
+                    low = bar.get("l", 0.0)
+                    close = bar.get("c", 0.0)
+                    volume = bar.get("v", 0)
+                    
+                    # For bid/ask, use close as approximation (historical bid/ask not available)
+                    # Estimate spread as ~2% of price (typical for options)
+                    spread_estimate = close * 0.01
+                    bid = max(0, close - spread_estimate)
+                    ask = close + spread_estimate
+                    
+                    # Try to get open interest from snapshot if available
+                    # Note: Historical OI may not be available through standard API
+                    open_interest = 0
+                    
+                    # Greeks are typically not available for historical data via standard API
+                    # Users with premium tier can use historical Greeks if available
+                    implied_volatility = None
+                    delta = None
+                    gamma = None
+                    theta = None
+                    vega = None
+                    
+                    contracts.append(
+                        OptionContract(
+                            ticker=ticker.upper(),
+                            contract_ticker=contract_ticker,
+                            expiry=expiry,
+                            strike=strike,
+                            option_type=contract_type,
+                            bid=bid,
+                            ask=ask,
+                            last=close,
+                            volume=volume,
+                            open_interest=open_interest,
+                            implied_volatility=implied_volatility,
+                            delta=delta,
+                            gamma=gamma,
+                            theta=theta,
+                            vega=vega,
+                        )
+                    )
+                
+                # Small delay to avoid rate limits
+                time.sleep(0.05)
+                
+            except Exception as e:
+                # Skip contracts that fail (may not have traded on that date)
+                continue
         
         return contracts
 
-    def get_stock_price(self, ticker: str) -> float:
-        """Fetch current stock price.
+    def get_stock_price(self, ticker: str, as_of: str | None = None) -> float:
+        """Fetch stock price for a specific date or current.
         
         Args:
             ticker: Stock ticker symbol.
+            as_of: Date in YYYY-MM-DD format. If None, fetches most recent.
         
         Returns:
-            Current price.
+            Close price for the specified date.
         """
-        endpoint = f"/v2/aggs/ticker/{ticker.upper()}/prev"
-        response = self._make_request(endpoint)
-        
-        results = response.get("results", [])
-        if not results:
-            raise RuntimeError(f"No price data found for {ticker}")
-        
-        # Return close price from previous day
-        return float(results[0].get("c", 0.0))
+        if as_of is None:
+            # Fetch most recent previous day close
+            endpoint = f"/v2/aggs/ticker/{ticker.upper()}/prev"
+            response = self._make_request(endpoint)
+            
+            results = response.get("results", [])
+            if not results:
+                raise RuntimeError(f"No price data found for {ticker}")
+            
+            return float(results[0].get("c", 0.0))
+        else:
+            # Fetch historical close for specific date
+            endpoint = f"/v1/open-close/{ticker.upper()}/{as_of}"
+            response = self._make_request(endpoint)
+            
+            if "close" not in response:
+                raise RuntimeError(f"No price data found for {ticker} on {as_of}")
+            
+            return float(response["close"])
 
     def compute_chain_features(
         self,
@@ -286,6 +460,7 @@ class PolygonClient:
         expiry: str,
         spot_price: float | None = None,
         atm_window_pct: float = 0.10,
+        as_of_date: str | None = None,
     ) -> dict[str, Any]:
         """Compute pipeline features from option chain.
         
@@ -300,14 +475,15 @@ class PolygonClient:
             expiry: Expiration date for the event.
             spot_price: Current stock price (fetched if not provided).
             atm_window_pct: Window around ATM for computing features (default 10%).
+            as_of_date: Historical date in YYYY-MM-DD format. If None, uses current data.
         
         Returns:
             Dictionary with computed features.
         """
         if spot_price is None:
-            spot_price = self.get_stock_price(ticker)
+            spot_price = self.get_stock_price(ticker, as_of=as_of_date)
         
-        chain = self.get_option_chain(ticker, expiry, include_greeks=True)
+        chain = self.get_option_chain(ticker, expiry, include_greeks=True, as_of_date=as_of_date)
         
         if not chain:
             raise RuntimeError(f"No option chain data for {ticker} expiry {expiry}")
@@ -346,7 +522,7 @@ class PolygonClient:
         
         return {
             "ticker": ticker.upper(),
-            "as_of": datetime.now().date().isoformat(),
+            "as_of": as_of_date if as_of_date else datetime.now().date().isoformat(),
             "expiry": expiry,
             "spot_price": spot_price,
             "risk_reversal": risk_reversal,
