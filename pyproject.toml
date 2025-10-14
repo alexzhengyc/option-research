@@ -1,0 +1,15 @@
+[project]
+name = "option-research"
+version = "0.1.0"
+description = "Directional score model for choosing call vs put trades"
+authors = [{name = "Option Research"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

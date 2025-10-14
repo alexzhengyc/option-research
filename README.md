@@ -131,3 +131,19 @@
 6. Save CSV with the chosen leg(s) (strike/expiry), suggested structure (naked vs vertical), and a notes field.
 
 If you want, I can generate a ready-to-run Python script that computes this **DirScore**, outputs a **daily ranked CALL/PUT watchlist**, and suggests **naked vs spread** based on the penalties.
+
+---
+
+## Running the sample pipeline
+
+The repository includes a small synthetic dataset in `data/sample_inputs.csv` with
+three months of feature history for three tickers. Use the CLI to produce the
+directional ranking for the most recent trade date:
+
+```bash
+python -m option_research data/sample_inputs.csv --trade-date 2024-03-28
+```
+
+Pass `--output ranked.csv` to persist the table. Adjust `--min-liquidity`,
+`--max-spread-penalty`, and the conviction thresholds to match your risk
+preferences.
