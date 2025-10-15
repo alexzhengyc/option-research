@@ -4,7 +4,10 @@ Runs during the 12:00-12:55 PM PT window to refresh directional scores
 using only live, intraday inputs (no ΔOI). The job mirrors the playbook in
 ``Method.md`` by:
 
-1. Pulling the current trade day's ``eds.daily_signals`` universe
+1. Loading upcoming earnings events from ``eds.earnings_events``:
+   - Today's after-market-close earnings (>= 4:00 PM)
+   - Tomorrow's earnings (all times)
+   - If not in database, fetches from Finnhub API and saves
 2. Re-snapshotting the event expiry chains from Polygon
 3. Recomputing the fast signals (RR, PCR, volume thrust, IV bump, spreads,
    beta-adjusted momentum)
@@ -30,14 +33,20 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "lib"))
 sys.path.insert(0, str(PROJECT_ROOT / "config"))
 
-from lib.polygon_client import get_chain_snapshot, get_underlying_agg  # noqa: E402
+from lib.polygon_client import (  # noqa: E402
+    get_chain_snapshot,
+    get_underlying_agg,
+    get_expiries,
+)
 from lib.signals import compute_all_signals  # noqa: E402
 from lib.scoring import (  # noqa: E402
     normalize_today,
     compute_intraday_dirscore,
     resolve_intraday_decision,
 )
-from lib.supa import SUPA, insert_rows  # noqa: E402
+from lib.supa import SUPA, insert_rows, upsert_rows  # noqa: E402
+from lib.finnhub_client import get_upcoming_earnings  # noqa: E402
+from lib.events import find_event_and_neighbors  # noqa: E402
 import config  # noqa: E402  # pylint: disable=unused-import
 
 
@@ -101,31 +110,185 @@ class IntradayJob:
         print(f"Snapshot : {self.asof_ts.isoformat()}")
         print(f"EWMA α   : {self.ewma_alpha:.2f}")
 
-    def load_daily_universe(self) -> pd.DataFrame:
-        """Load the symbols/event expiries from today's daily signals."""
-
-        print("\n1. Loading today's daily signals for intraday refresh...")
+    def load_earnings_from_db(self, target_date: date) -> pd.DataFrame:
+        """Load earnings events from database for a specific date."""
+        
+        print(f"   Checking database for earnings on {target_date}...")
         response = (
             SUPA.schema("eds")
-            .table("daily_signals")
-            .select("symbol,event_expiry")
-            .eq("trade_date", self.trade_date.isoformat())
+            .table("earnings_events")
+            .select("symbol,earnings_ts")
+            .gte("earnings_ts", target_date.isoformat())
+            .lt("earnings_ts", (target_date + timedelta(days=1)).isoformat())
             .execute()
         )
         data = response.data or []
-
+        
         if not data:
-            print("   ✗ No daily signals available for trade date")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data)
+        df["earnings_ts"] = pd.to_datetime(df["earnings_ts"])
+        df["earnings_date"] = df["earnings_ts"].dt.date
+        print(f"   ✓ Found {len(df)} earnings events in database")
+        return df
+
+    def fetch_and_save_earnings(self, target_date: date, universe: List[str]) -> pd.DataFrame:
+        """Fetch earnings from Finnhub and save to database."""
+        
+        print(f"   Fetching earnings from Finnhub for {target_date}...")
+        
+        try:
+            # Fetch from Finnhub
+            earnings_events = get_upcoming_earnings(
+                symbols=universe,
+                start=target_date,
+                end=target_date
+            )
+            
+            if not earnings_events:
+                print("   ✗ No earnings found from Finnhub")
+                return pd.DataFrame()
+            
+            print(f"   ✓ Found {len(earnings_events)} earnings from Finnhub")
+            
+            # Save to database
+            rows = [
+                {
+                    "symbol": event["symbol"],
+                    "earnings_ts": event["earnings_ts"].isoformat()
+                }
+                for event in earnings_events
+            ]
+            
+            try:
+                upsert_rows(
+                    table="eds.earnings_events",
+                    rows=rows,
+                    on_conflict="symbol,earnings_ts"
+                )
+                print(f"   ✓ Saved {len(rows)} earnings events to database")
+            except Exception as exc:
+                print(f"   ⚠ Warning: Could not save to database: {exc}")
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(earnings_events)
+            df["earnings_date"] = df["earnings_ts"].dt.date
+            return df
+            
+        except Exception as exc:
+            print(f"   ✗ Error fetching earnings: {exc}")
             return pd.DataFrame()
 
+    def load_earnings_after_close_today(self) -> pd.DataFrame:
+        """Load today's after-market-close earnings (>= 4:00 PM)."""
+        
+        print(f"   Checking for today's after-close earnings...")
+        
+        # Market close is at 4:00 PM ET (16:00)
+        market_close_time = datetime.combine(self.trade_date, datetime.min.time()).replace(hour=16, minute=0)
+        
+        response = (
+            SUPA.schema("eds")
+            .table("earnings_events")
+            .select("symbol,earnings_ts")
+            .gte("earnings_ts", market_close_time.isoformat())
+            .lt("earnings_ts", (self.trade_date + timedelta(days=1)).isoformat())
+            .execute()
+        )
+        data = response.data or []
+        
+        if not data:
+            return pd.DataFrame()
+        
         df = pd.DataFrame(data)
-        if "event_expiry" in df.columns:
-            df["event_expiry"] = pd.to_datetime(
-                df["event_expiry"], errors="coerce"
-            ).dt.date
+        df["earnings_ts"] = pd.to_datetime(df["earnings_ts"])
+        df["earnings_date"] = df["earnings_ts"].dt.date
+        print(f"   ✓ Found {len(df)} after-close earnings today")
+        return df
+
+    def load_daily_universe(self) -> pd.DataFrame:
+        """
+        Load the universe of stocks with upcoming earnings.
+        
+        Strategy:
+        1. Load today's after-market-close earnings (>= 4:00 PM)
+        2. Load tomorrow's earnings (all times)
+        3. If none found, fetch from Finnhub API and save to database
+        4. Return combined universe
+        """
+
+        tomorrow = self.trade_date + timedelta(days=1)
+        print(f"\n1. Loading earnings universe (today after-close + tomorrow)...")
+        
+        # Load today's after-close earnings
+        df_today_amc = self.load_earnings_after_close_today()
+        
+        # Load tomorrow's earnings
+        df_tomorrow = self.load_earnings_from_db(tomorrow)
+        
+        # Combine the dataframes
+        if not df_today_amc.empty and not df_tomorrow.empty:
+            df = pd.concat([df_today_amc, df_tomorrow], ignore_index=True)
+            df = df.drop_duplicates(subset=["symbol"], keep="first")
+        elif not df_today_amc.empty:
+            df = df_today_amc
+        elif not df_tomorrow.empty:
+            df = df_tomorrow
+        else:
+            df = pd.DataFrame()
+        
+        # If no earnings found in database, fetch from API
+        if df.empty:
+            print("   ⚠ No earnings in database, fetching from API...")
+            
+            # Define default universe to check
+            # This could be loaded from a config file or database in the future
+            universe = [
+                "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD",
+                "NFLX", "DIS", "BAC", "JPM", "WFC", "GS", "MS", "C",
+                "XOM", "CVX", "COP", "SLB", "HAL", "MPC",
+                "BA", "CAT", "DE", "GE", "HON", "MMM", "LMT", "RTX",
+                "WMT", "TGT", "COST", "HD", "LOW", "NKE", "SBUX",
+                "PFE", "JNJ", "UNH", "CVS", "ABBV", "BMY", "LLY", "MRK",
+                "V", "MA", "PYPL", "SQ", "UBER", "LYFT",
+                "CRM", "ORCL", "ADBE", "INTC", "QCOM", "AVGO",
+                "T", "VZ", "TMUS", "CMCSA",
+                "UAL", "DAL", "AAL", "LUV",
+                "MGM", "WYNN", "LVS", "PENN",
+                "SPY", "QQQ", "IWM", "DIA"
+            ]
+            
+            # Fetch for both today and tomorrow
+            df_today_fetched = self.fetch_and_save_earnings(self.trade_date, universe)
+            df_tomorrow_fetched = self.fetch_and_save_earnings(tomorrow, universe)
+            
+            # Filter today's to only after-close
+            if not df_today_fetched.empty:
+                df_today_fetched = df_today_fetched[
+                    df_today_fetched["earnings_ts"].dt.hour >= 16
+                ]
+            
+            # Combine
+            if not df_today_fetched.empty and not df_tomorrow_fetched.empty:
+                df = pd.concat([df_today_fetched, df_tomorrow_fetched], ignore_index=True)
+                df = df.drop_duplicates(subset=["symbol"], keep="first")
+            elif not df_today_fetched.empty:
+                df = df_today_fetched
+            elif not df_tomorrow_fetched.empty:
+                df = df_tomorrow_fetched
+            else:
+                df = pd.DataFrame()
+        
+        if df.empty:
+            print("   ✗ No earnings events found")
+            return pd.DataFrame()
 
         print(f"   ✓ Universe size: {len(df)} symbols")
-        return df
+        
+        # For now, return symbol and earnings_date
+        # Event expiry will be determined when we snapshot
+        return df[["symbol", "earnings_date"]].copy()
 
     def _estimate_med20_volumes(self, symbol: str) -> Dict[str, float]:
         """Estimate 20-day baseline volumes using the Stage 8 heuristic."""
@@ -200,10 +363,36 @@ class IntradayJob:
     def build_intraday_snapshot(
         self,
         symbol: str,
-        event_expiry: Optional[date],
+        earnings_date: Optional[date],
     ) -> Optional[IntradaySnapshot]:
-        """Compute raw signals for a single symbol."""
+        """Compute raw signals for a single symbol with earnings on earnings_date."""
 
+        if not earnings_date:
+            return None
+        
+        # Find the appropriate option expiry for this earnings date
+        try:
+            # Get available expiries for this symbol
+            expiries = get_expiries(symbol)
+            if not expiries:
+                print(f"   - {symbol}: No option expiries available")
+                return None
+            
+            # Find the event expiry (first expiry on or after earnings)
+            # Assume earnings are after market close for simplicity (16:00)
+            earnings_ts = datetime.combine(earnings_date, datetime.min.time()).replace(hour=16, minute=0)
+            expiry_info = find_event_and_neighbors(earnings_ts, expiries)
+            event_expiry = expiry_info.get("event")
+            
+            if not event_expiry:
+                print(f"   - {symbol}: No suitable event expiry found for earnings on {earnings_date}")
+                return None
+                
+        except Exception as exc:
+            print(f"   - {symbol}: Error finding event expiry: {exc}")
+            return None
+
+        # Snapshot the option chain for the event expiry
         contracts = self.snapshot_event(symbol, event_expiry)
         if not contracts:
             return None
@@ -212,7 +401,7 @@ class IntradayJob:
 
         signals = compute_all_signals(
             symbol=symbol,
-            event_date=event_expiry or self.trade_date,
+            event_date=event_expiry,
             event_contracts=contracts,
             prev_contracts=None,
             next_contracts=None,
@@ -424,8 +613,10 @@ class IntradayJob:
         snapshots: List[IntradaySnapshot] = []
         for _, row in universe.iterrows():
             symbol = row["symbol"]
-            event_expiry = row.get("event_expiry")
-            snapshot = self.build_intraday_snapshot(symbol, event_expiry)
+            # earnings_date is when the company reports, 
+            # event_expiry will be determined when we find the option chain
+            earnings_date = row.get("earnings_date")
+            snapshot = self.build_intraday_snapshot(symbol, earnings_date)
             if snapshot is None:
                 continue
             snapshots.append(snapshot)
