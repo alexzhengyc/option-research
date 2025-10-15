@@ -110,27 +110,32 @@ class IntradayJob:
         print(f"Snapshot : {self.asof_ts.isoformat()}")
         print(f"EWMA α   : {self.ewma_alpha:.2f}")
 
-    def load_earnings_from_db(self, target_date: date) -> pd.DataFrame:
-        """Load earnings events from database for a specific date."""
-        
-        print(f"   Checking database for earnings on {target_date}...")
+    def load_earnings_from_db(
+        self,
+        start_ts: datetime,
+        end_ts: datetime,
+        label: str,
+    ) -> pd.DataFrame:
+        """Load earnings events between ``start_ts`` (inclusive) and ``end_ts`` (exclusive)."""
+
+        print(f"   Checking database for {label} earnings...")
         response = (
             SUPA.schema("eds")
             .table("earnings_events")
             .select("symbol,earnings_ts")
-            .gte("earnings_ts", target_date.isoformat())
-            .lt("earnings_ts", (target_date + timedelta(days=1)).isoformat())
+            .gte("earnings_ts", start_ts.isoformat())
+            .lt("earnings_ts", end_ts.isoformat())
             .execute()
         )
         data = response.data or []
-        
+
         if not data:
             return pd.DataFrame()
-        
+
         df = pd.DataFrame(data)
         df["earnings_ts"] = pd.to_datetime(df["earnings_ts"])
         df["earnings_date"] = df["earnings_ts"].dt.date
-        print(f"   ✓ Found {len(df)} earnings events in database")
+        print(f"   ✓ Found {len(df)} {label} earnings in database")
         return df
 
     def fetch_and_save_earnings(self, target_date: date, universe: List[str]) -> pd.DataFrame:
@@ -182,30 +187,21 @@ class IntradayJob:
 
     def load_earnings_after_close_today(self) -> pd.DataFrame:
         """Load today's after-market-close earnings (>= 4:00 PM)."""
-        
+
         print(f"   Checking for today's after-close earnings...")
-        
+
         # Market close is at 4:00 PM ET (16:00)
-        market_close_time = datetime.combine(self.trade_date, datetime.min.time()).replace(hour=16, minute=0)
-        
-        response = (
-            SUPA.schema("eds")
-            .table("earnings_events")
-            .select("symbol,earnings_ts")
-            .gte("earnings_ts", market_close_time.isoformat())
-            .lt("earnings_ts", (self.trade_date + timedelta(days=1)).isoformat())
-            .execute()
-        )
-        data = response.data or []
-        
-        if not data:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        df["earnings_ts"] = pd.to_datetime(df["earnings_ts"])
-        df["earnings_date"] = df["earnings_ts"].dt.date
-        print(f"   ✓ Found {len(df)} after-close earnings today")
-        return df
+        start_ts = datetime.combine(self.trade_date, datetime.min.time()).replace(hour=16, minute=0)
+        end_ts = datetime.combine(self.trade_date + timedelta(days=1), datetime.min.time())
+
+        return self.load_earnings_from_db(start_ts, end_ts, "after-close today")
+
+    def load_earnings_before_open(self, target_date: date) -> pd.DataFrame:
+        """Load earnings scheduled before the market opens (<= 9:30 AM ET)."""
+
+        market_open = datetime.combine(target_date, datetime.min.time()).replace(hour=9, minute=30)
+        start_ts = datetime.combine(target_date, datetime.min.time())
+        return self.load_earnings_from_db(start_ts, market_open, "pre-open")
 
     def load_daily_universe(self) -> pd.DataFrame:
         """
@@ -213,7 +209,7 @@ class IntradayJob:
         
         Strategy:
         1. Load today's after-market-close earnings (>= 4:00 PM)
-        2. Load tomorrow's earnings (all times)
+        2. Load tomorrow's before-open earnings (< 9:30 AM ET)
         3. If none found, fetch from Finnhub API and save to database
         4. Return combined universe
         """
@@ -223,9 +219,9 @@ class IntradayJob:
         
         # Load today's after-close earnings
         df_today_amc = self.load_earnings_after_close_today()
-        
-        # Load tomorrow's earnings
-        df_tomorrow = self.load_earnings_from_db(tomorrow)
+
+        # Load tomorrow's before-open earnings
+        df_tomorrow = self.load_earnings_before_open(tomorrow)
         
         # Combine the dataframes
         if not df_today_amc.empty and not df_tomorrow.empty:
@@ -262,11 +258,23 @@ class IntradayJob:
             # Fetch for both today and tomorrow
             df_today_fetched = self.fetch_and_save_earnings(self.trade_date, universe)
             df_tomorrow_fetched = self.fetch_and_save_earnings(tomorrow, universe)
-            
+
             # Filter today's to only after-close
             if not df_today_fetched.empty:
                 df_today_fetched = df_today_fetched[
                     df_today_fetched["earnings_ts"].dt.hour >= 16
+                ]
+
+            if not df_tomorrow_fetched.empty:
+                df_tomorrow_fetched = df_tomorrow_fetched[
+                    (
+                        (df_tomorrow_fetched["earnings_ts"].dt.hour < 9)
+                        |
+                        (
+                            (df_tomorrow_fetched["earnings_ts"].dt.hour == 9)
+                            & (df_tomorrow_fetched["earnings_ts"].dt.minute < 30)
+                        )
+                    )
                 ]
             
             # Combine
