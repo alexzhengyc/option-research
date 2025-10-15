@@ -46,7 +46,7 @@ from lib.scoring import (  # noqa: E402
     resolve_intraday_decision,
 )
 from lib.supa import SUPA, insert_rows, upsert_rows  # noqa: E402
-from lib.finnhub_client import get_upcoming_earnings  # noqa: E402
+from lib.finnhub_client import FinnhubClient  # noqa: E402
 from lib.events import find_event_and_neighbors  # noqa: E402
 import config  # noqa: E402  # pylint: disable=unused-import
 
@@ -173,48 +173,92 @@ class IntradayJob:
         df["earnings_date"] = df["earnings_ts"].dt.date
         return df
 
-    def fetch_and_save_earnings(self, target_date: date, universe: List[str]) -> pd.DataFrame:
+    def fetch_and_save_earnings(self, target_date: date) -> pd.DataFrame:
         """Fetch earnings from Finnhub and save to database."""
         
         print(f"   Fetching earnings from Finnhub for {target_date}...")
         
         try:
-            # Fetch from Finnhub
-            earnings_events = get_upcoming_earnings(
-                symbols=universe,
-                start=target_date,
-                end=target_date
+            # Fetch from Finnhub using the same approach as the working example
+            client = FinnhubClient()
+            earnings_calendar = client.get_earnings_calendar(
+                start_date=target_date,
+                end_date=target_date
             )
 
-            if not earnings_events:
+            if not earnings_calendar:
                 print("   ✗ No earnings found from Finnhub")
                 return pd.DataFrame()
 
-            print(f"   ✓ Found {len(earnings_events)} earnings from Finnhub")
+            print(f"   ✓ Found {len(earnings_calendar)} earnings from Finnhub")
 
-            df = pd.DataFrame(earnings_events)
-            df = self._normalize_earnings_frame(df)
+            # Convert to DataFrame - keep the raw data
+            records = []
+            for event in earnings_calendar:
+                symbol = event.get("symbol")
+                earnings_date = event.get("date")  # Format: "YYYY-MM-DD"
+                earnings_hour = event.get("hour")  # Format: "bmo", "amc", or specific time
+                
+                if not symbol or not earnings_date:
+                    continue
+                
+                try:
+                    # Parse the date
+                    dt = datetime.strptime(earnings_date, "%Y-%m-%d")
+                    
+                    records.append({
+                        "symbol": symbol,
+                        "earnings_date": earnings_date,
+                        "earnings_hour": earnings_hour or "amc",  # Default to amc if not specified
+                        "date_obj": dt.date()
+                    })
+                except (ValueError, TypeError) as e:
+                    print(f"      Warning: Could not parse date for {symbol}: {earnings_date} - {e}")
+                    continue
 
-            if df.empty:
-                print("   ✗ Earnings fetched but no valid timestamps")
+            if not records:
+                print("   ✗ Earnings fetched but no valid data")
                 return pd.DataFrame()
 
-            # Save to database
-            rows = [
-                {
-                    "symbol": row["symbol"],
-                    "earnings_ts": row["earnings_ts"].isoformat(),
-                }
-                for row in df.to_dict("records")
-            ]
+            df = pd.DataFrame(records)
+            
+            # Save to database with converted timestamps
+            rows_to_save = []
+            for record in records:
+                dt = datetime.strptime(record["earnings_date"], "%Y-%m-%d")
+                earnings_hour = record["earnings_hour"]
+                
+                # Convert to timestamp for database storage
+                if earnings_hour == "bmo":
+                    dt = dt.replace(hour=9, minute=0)
+                elif earnings_hour == "amc":
+                    dt = dt.replace(hour=16, minute=0)
+                else:
+                    # Try to parse specific time if provided
+                    try:
+                        time_parts = earnings_hour.split(":")
+                        if len(time_parts) >= 2:
+                            dt = dt.replace(
+                                hour=int(time_parts[0]),
+                                minute=int(time_parts[1])
+                            )
+                        else:
+                            dt = dt.replace(hour=16, minute=0)
+                    except (ValueError, AttributeError):
+                        dt = dt.replace(hour=16, minute=0)
+                
+                rows_to_save.append({
+                    "symbol": record["symbol"],
+                    "earnings_ts": dt.isoformat(),
+                })
 
             try:
                 upsert_rows(
                     table="eds.earnings_events",
-                    rows=rows,
+                    rows=rows_to_save,
                     on_conflict="symbol,earnings_ts"
                 )
-                print(f"   ✓ Saved {len(rows)} earnings events to database")
+                print(f"   ✓ Saved {len(rows_to_save)} earnings events to database")
             except Exception as exc:
                 print(f"   ⚠ Warning: Could not save to database: {exc}")
             
@@ -255,19 +299,19 @@ class IntradayJob:
         )
         return self.load_earnings_from_db(start_ts, market_open, "pre-open")
 
-    def load_daily_universe(self) -> pd.DataFrame:
+    def load_daily_earnings(self) -> pd.DataFrame:
         """
-        Load the universe of stocks with upcoming earnings.
+        Load earnings events for intraday monitoring.
 
         Strategy:
         1. Load today's after-market-close earnings (>= 1:00 PM PT)
         2. Load tomorrow's before-open earnings (< 6:30 AM PT)
         3. If none found, fetch from Finnhub API and save to database
-        4. Return combined universe
+        4. Return combined earnings events
         """
 
         tomorrow = self.trade_date + timedelta(days=1)
-        print(f"\n1. Loading earnings universe (today after-close + tomorrow)...")
+        print(f"\n1. Loading earnings events (today after-close + tomorrow)...")
         
         # Load today's after-close earnings
         df_today_amc = self.load_earnings_after_close_today()
@@ -282,49 +326,35 @@ class IntradayJob:
         if needs_today_fetch or needs_tomorrow_fetch:
             print("   ⚠ Earnings missing in database, fetching from API...")
 
-            universe = [
-                "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD",
-                "NFLX", "DIS", "BAC", "JPM", "WFC", "GS", "MS", "C",
-                "XOM", "CVX", "COP", "SLB", "HAL", "MPC",
-                "BA", "CAT", "DE", "GE", "HON", "MMM", "LMT", "RTX",
-                "WMT", "TGT", "COST", "HD", "LOW", "NKE", "SBUX",
-                "PFE", "JNJ", "UNH", "CVS", "ABBV", "BMY", "LLY", "MRK",
-                "V", "MA", "PYPL", "SQ", "UBER", "LYFT",
-                "CRM", "ORCL", "ADBE", "INTC", "QCOM", "AVGO",
-                "T", "VZ", "TMUS", "CMCSA",
-                "UAL", "DAL", "AAL", "LUV",
-                "MGM", "WYNN", "LVS", "PENN",
-                "SPY", "QQQ", "IWM", "DIA"
-            ]
-
             if needs_today_fetch:
-                df_today_fetched = self.fetch_and_save_earnings(self.trade_date, universe)
+                df_today_fetched = self.fetch_and_save_earnings(self.trade_date)
                 if not df_today_fetched.empty:
+                    # Filter for after-market-close earnings
                     df_today_fetched = df_today_fetched[
-                        df_today_fetched["earnings_ts"].dt.hour >= 13
-                    ]
-                    df_today_amc = pd.concat([
-                        df_today_amc,
-                        df_today_fetched,
-                    ], ignore_index=True).drop_duplicates(subset=["symbol", "earnings_ts"])
+                        df_today_fetched["earnings_hour"] == "amc"
+                    ].copy()
+                    if not df_today_fetched.empty:
+                        # Rename to match db schema
+                        df_today_fetched = df_today_fetched.rename(columns={"date_obj": "earnings_date"})
+                        df_today_amc = pd.concat([
+                            df_today_amc,
+                            df_today_fetched[["symbol", "earnings_date"]],
+                        ], ignore_index=True).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
 
             if needs_tomorrow_fetch:
-                df_tomorrow_fetched = self.fetch_and_save_earnings(tomorrow, universe)
+                df_tomorrow_fetched = self.fetch_and_save_earnings(tomorrow)
                 if not df_tomorrow_fetched.empty:
+                    # Filter for before-market-open earnings
                     df_tomorrow_fetched = df_tomorrow_fetched[
-                        (
-                            (df_tomorrow_fetched["earnings_ts"].dt.hour < 6)
-                            |
-                            (
-                                (df_tomorrow_fetched["earnings_ts"].dt.hour == 6)
-                                & (df_tomorrow_fetched["earnings_ts"].dt.minute < 30)
-                            )
-                        )
-                    ]
-                    df_tomorrow = pd.concat([
-                        df_tomorrow,
-                        df_tomorrow_fetched,
-                    ], ignore_index=True).drop_duplicates(subset=["symbol", "earnings_ts"])
+                        df_tomorrow_fetched["earnings_hour"] == "bmo"
+                    ].copy()
+                    if not df_tomorrow_fetched.empty:
+                        # Rename to match db schema
+                        df_tomorrow_fetched = df_tomorrow_fetched.rename(columns={"date_obj": "earnings_date"})
+                        df_tomorrow = pd.concat([
+                            df_tomorrow,
+                            df_tomorrow_fetched[["symbol", "earnings_date"]],
+                        ], ignore_index=True).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
 
         # Combine the dataframes after any fetches
         if not df_today_amc.empty and not df_tomorrow.empty:
@@ -341,7 +371,7 @@ class IntradayJob:
             print("   ✗ No earnings events found")
             return pd.DataFrame()
 
-        print(f"   ✓ Universe size: {len(df)} symbols")
+        print(f"   ✓ Found {len(df)} earnings events")
         
         # For now, return symbol and earnings_date
         # Event expiry will be determined when we snapshot
@@ -662,13 +692,13 @@ class IntradayJob:
     def run(self) -> pd.DataFrame:
         """Execute the intraday job end-to-end."""
 
-        universe = self.load_daily_universe()
-        if universe.empty:
+        earnings_events = self.load_daily_earnings()
+        if earnings_events.empty:
             return pd.DataFrame()
 
         print("\n2. Re-snapshotting event expiries...")
         snapshots: List[IntradaySnapshot] = []
-        for _, row in universe.iterrows():
+        for _, row in earnings_events.iterrows():
             symbol = row["symbol"]
             # earnings_date is when the company reports, 
             # event_expiry will be determined when we find the option chain
