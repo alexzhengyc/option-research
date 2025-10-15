@@ -36,5 +36,9 @@ create table if not exists eds.intraday_signals (
 create index if not exists ix_intraday_trade_date on eds.intraday_signals(trade_date);
 create index if not exists ix_intraday_symbol on eds.intraday_signals(symbol);
 
+-- Grant permissions on the new table
+grant all on eds.intraday_signals to service_role;
+grant select on eds.intraday_signals to authenticated;
+
 alter table eds.intraday_signals enable row level security;
 create policy "read_intraday_signals" on eds.intraday_signals for select to authenticated using (true);
