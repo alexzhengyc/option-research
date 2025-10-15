@@ -101,7 +101,9 @@ If you want to place **calls/puts directly** (not “trade vol”), you want a m
 
 ---
 
-## Quick examples
+## Quick examples (illustrative only)
+
+*Use these as pattern templates, not specific tickers—they are purely numerical examples.*
 
 * **Bullish CALL case:**
   D1 +1.2, D2 +0.9, D3 +0.6, D4 +0.3, D5 +0.2, P1 0.3, P2 0.2
@@ -133,3 +135,80 @@ If you want to place **calls/puts directly** (not “trade vol”), you want a m
 6. Save CSV with the chosen leg(s) (strike/expiry), suggested structure (naked vs vertical), and a notes field.
 
 If you want, I can generate a ready-to-run Python script that computes this **DirScore**, outputs a **daily ranked CALL/PUT watchlist**, and suggests **naked vs spread** based on the penalties.
+
+---
+
+## Intraday Timing Playbook (Pacific Time)
+
+Use this playbook alongside the daily process to handle names with earnings **tomorrow**.
+
+### 1) Timing expectations
+
+* **BMO tomorrow:** make the decision **today** before 1:00 PM PT. Run the model every 5–15 minutes from 12:00–12:55 PM PT, freeze the final read around 12:55 PM PT (3:55 ET), and place the order.
+* **AMC tomorrow:** today’s pass is for planning and sizing only. Take the actual trade **tomorrow** around 12:55 PM PT after rerunning the loop.
+* Always archive the **12:55 PM PT snapshot** as the “decision state” so backtests line up with live behavior.
+
+### 2) Intraday signals (no ΔOI yet)
+
+Because **open interest is T+1**, intraday reads rely on live feeds:
+
+* **RR / Skew (25Δ, event expiry):** direction bias.
+* **PCR (volume & notional, event expiry):** sentiment gauge.
+* **Volume thrust (calls vs puts, event expiry):** participation.
+* **ATM straddle / implied move:** sizing context only.
+* **Spread % near ATM:** execution penalty.
+* **Short-term momentum (3–5d, beta-adjusted):** weak prior.
+
+Add **ΔOI** tomorrow pre-market if the print was AMC; it will not exist in time for BMO decisions.
+
+### 3) Intraday “nowcast” score (ΔOI omitted)
+
+Run this score every 5–15 minutes and smooth it with an **EWMA (α≈0.3)** using the existing features but without ΔOI:
+
+\[
+\text{DirScore}_\text{now} = 0.38\,z(\text{RR}_{25Δ}) + 0.28\,z(Δ\text{Vol}_\text{calls} - Δ\text{Vol}_\text{puts}) - 0.18\,z(\text{PCR}) + 0.10\,z(\text{mom}_{3d,β}) - 0.10\,\text{pct}(\text{IV\_bump}) - 0.05\,z(\text{spread\%})
+\]
+
+Decision logic at **12:55 PM PT**:
+
+* **DirScore_now ≥ +0.70:** call.
+* **DirScore_now ≤ −0.70:** put.
+* **|DirScore_now| 0.40–0.69:** debit spread (keep theta low).
+* **|DirScore_now| < 0.40:** pass.
+
+**Guards:**
+
+* Ignore contracts with **volume <10** or **spread% >10%**.
+* If **IV_bump ≥ 80th percentile**, prefer verticals (ATM / ±5% OTM).
+* If the score swings **>0.4 within the last 15 minutes**, halve size to avoid whipsaws.
+
+### 4) Execution rules
+
+* **Entry (BMO tomorrow):** place by **12:58 PM PT** at mid −25–35% of the spread; retry once. If the fill fails and spread >12%, pivot to a $5-wide vertical.
+* **Entry (AMC tomorrow):** today is planning only. Tomorrow rerun the loop and trade at 12:55 PM PT.
+* **Exits:** protective stop at −40% on option price or if the underlying moves opposite the signal by half of the implied move. Take-profit bracket at +50% / +100%; trail if IV collapses faster than expected.
+* **End-of-day:** flatten by the end of earnings day unless explicitly running a PEAD follow-through.
+* **Sizing:** risk 0.5–1.0% of the account per trade (cost at risk for long options). Scale linearly with implied-move percentile but cap at 1.0%.
+
+### 5) Intraday loop (pseudo)
+
+```
+# run from 12:00 to 12:55 PM PT (cron every 5–15 min)
+contracts = polygon.get_chain_snapshot(symbol, event_expiry, neighbors)
+features = compute_features_now(contracts)   # RR, PCR, ΔVol, ATM straddle, spread%, momentum
+score = dirscore_now(features)               # formula above
+score = ewma(score, alpha=0.3)
+persist(symbol, timestamp, features, score)
+
+if time_is_12_55_pm_pt():
+    decision = pick_decision(score, iv_bump, spread)
+    leg = suggest_leg(decision, event_expiry, iv_bump)  # naked vs vertical
+    place_order_if_BMO_tomorrow(decision, leg)
+    snapshot_as_truth(symbol, score, decision, leg)
+```
+
+### 6) Special cases
+
+* Multiple names in the same hour → cap total portfolio event risk (e.g., ≤3%).
+* Halt or volatility pause near the close → do not force a fill; if no fair mid within 30 seconds, skip.
+* Macro event after the close (FOMC, index rebalance) → widen thresholds to ±0.9 or pass altogether.
