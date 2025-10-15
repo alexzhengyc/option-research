@@ -166,6 +166,38 @@ combined_flow = 0.5 * net_thrust_vol + 0.5 * (oi_thrust_calls - oi_thrust_puts)
 30 8 * * 1-5 python jobs/pre_market.py --update-scores
 ```
 
+### Stage 10: Intraday Nowcast ✅
+
+**File Created:** `/jobs/intraday.py`
+
+**Features Implemented:**
+
+1. ✅ Loads same-day universe from `eds.daily_signals`
+2. ✅ Pulls fresh Polygon snapshots for the earnings expiry
+3. ✅ Recomputes fast signals (RR, PCR, volume thrust, IV bump, spread, momentum)
+4. ✅ Cross-sectional normalization + intraday DirScore weights (0.38/0.28/−0.18/0.10/−0.10/−0.05)
+5. ✅ EWMA smoothing (α configurable, default 0.3) with whip-saw guard (>0.4 swing → 50% size)
+6. ✅ Guardrails per Method.md (volume <10, spread >10%, IV percentile ≥80 → vertical)
+7. ✅ Persists snapshots to new table `eds.intraday_signals`
+
+**Database Updates:**
+- New table `eds.intraday_signals` with raw + normalized features, EWMA, direction/structure
+
+**Command Line Options:**
+```bash
+# Run once (defaults to today/now, α=0.3)
+python jobs/intraday.py
+
+# Override trade date / timestamp / alpha
+python jobs/intraday.py --trade-date 2025-10-15 --asof 2025-10-15T12:45:00-07:00 --alpha 0.35
+```
+
+**Suggested Cron:**
+```cron
+# Run every 10 minutes between 12:00-12:55 PM PT (earnings BMO window)
+*/10 12 * * 1-5 python jobs/intraday.py --alpha 0.3
+```
+
 ### Testing ✅
 
 **Files Created:**

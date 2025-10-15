@@ -8,7 +8,9 @@ import pandas as pd
 from lib.scoring import (
     normalize_today,
     compute_dirscore,
-    compute_scores_batch
+    compute_scores_batch,
+    compute_intraday_dirscore,
+    resolve_intraday_decision
 )
 
 
@@ -326,6 +328,70 @@ class TestScoringConsistency:
         # Should be identical
         assert abs(score_batch - score_manual) < 0.001
         assert decision_batch == decision_manual
+
+
+class TestIntradayScoring:
+    """Validate intraday DirScore computations and guardrails."""
+
+    def test_intraday_weights(self):
+        """Confirm weights match Method.md specification."""
+
+        row = pd.Series({
+            'z_rr_25d': 1.0,
+            'z_net_thrust': 0.5,
+            'z_vol_pcr': -0.25,
+            'z_beta_adj_return': 0.2,
+            'pct_iv_bump': 0.4,
+            'z_spread_pct_atm': 0.1
+        })
+
+        score, direction = compute_intraday_dirscore(row)
+
+        # Manual calculation with documented weights
+        expected = (
+            0.38 * 1.0
+            + 0.28 * 0.5
+            + (-0.18) * (-0.25)
+            + 0.10 * 0.2
+            + (-0.10) * 0.4
+            + (-0.05) * 0.1
+        )
+
+        assert abs(score - expected) < 1e-9
+        assert direction == 'CALL'
+
+    def test_intraday_decision_guards(self):
+        """Ensure guardrails enforce skips and structure changes."""
+
+        # High score but wide spread should skip
+        decision, structure = resolve_intraday_decision(
+            score=1.0,
+            pct_iv_bump=0.50,
+            spread_pct=15.0,
+            total_volume=100,
+        )
+        assert decision == 'PASS'
+        assert structure == 'SKIP'
+
+        # Medium score with rich IV should recommend vertical
+        decision, structure = resolve_intraday_decision(
+            score=0.55,
+            pct_iv_bump=0.9,
+            spread_pct=0.05,
+            total_volume=200,
+        )
+        assert decision == 'CALL'
+        assert structure == 'VERTICAL'
+
+        # Low volume should skip regardless of score
+        decision, structure = resolve_intraday_decision(
+            score=-0.8,
+            pct_iv_bump=0.2,
+            spread_pct=0.03,
+            total_volume=5,
+        )
+        assert decision == 'PASS'
+        assert structure == 'SKIP'
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from datetime import datetime
 from scipy import stats
 
 
@@ -28,6 +29,26 @@ class DirectionalScore:
     d5_consistency: float = 0.0
     p1_iv_cost: float = 0.0
     p2_spread: float = 0.0
+
+
+@dataclass
+class IntradayScore:
+    """Container for intraday directional score snapshots."""
+
+    symbol: str
+    asof_ts: datetime
+    dir_score_now: float
+    dir_score_ewma: float
+    decision: str
+    structure: str
+    direction: str
+
+    z_rr_25d: float = 0.0
+    z_net_thrust: float = 0.0
+    z_vol_pcr: float = 0.0
+    z_beta_adj_return: float = 0.0
+    pct_iv_bump: float = 0.5
+    z_spread_pct_atm: float = 0.0
 
 
 class DirectionalScorer:
@@ -236,6 +257,90 @@ class DirectionalScorer:
             p1_iv_cost=p1,
             p2_spread=p2,
         )
+
+
+# ============================================================================
+# Intraday scoring helpers (Method.md intraday playbook)
+# ============================================================================
+
+
+def compute_intraday_dirscore(
+    row: pd.Series,
+    weights: Optional[Dict[str, float]] = None,
+) -> Tuple[float, str]:
+    """Compute intraday directional score using nowcast weights."""
+
+    if weights is None:
+        weights = {
+            "d1": 0.38,
+            "d2": 0.28,
+            "d3": -0.18,
+            "d4": 0.10,
+            "p1": -0.10,
+            "p2": -0.05,
+        }
+
+    d1 = row.get("z_rr_25d", 0.0)
+    d2 = row.get("z_net_thrust", 0.0)
+    d3 = row.get("z_vol_pcr", 0.0)
+    d4 = row.get("z_beta_adj_return", 0.0)
+    p1 = row.get("pct_iv_bump", 0.5)
+    p2 = row.get("z_spread_pct_atm", 0.0)
+
+    d1 = 0.0 if pd.isna(d1) else d1
+    d2 = 0.0 if pd.isna(d2) else d2
+    d3 = 0.0 if pd.isna(d3) else d3
+    d4 = 0.0 if pd.isna(d4) else d4
+    p1 = 0.5 if pd.isna(p1) else p1
+    p2 = 0.0 if pd.isna(p2) else p2
+
+    score = (
+        weights["d1"] * d1
+        + weights["d2"] * d2
+        + weights["d3"] * d3
+        + weights["d4"] * d4
+        + weights["p1"] * p1
+        + weights["p2"] * p2
+    )
+
+    direction = "CALL" if score >= 0 else "PUT"
+    return score, direction
+
+
+def resolve_intraday_decision(
+    score: float,
+    pct_iv_bump: Optional[float],
+    spread_pct: Optional[float],
+    total_volume: Optional[float],
+) -> Tuple[str, str]:
+    """Determine decision/structure for intraday scores with guardrails."""
+
+    if total_volume is not None and not pd.isna(total_volume):
+        if total_volume < 10:
+            return "PASS", "SKIP"
+
+    if spread_pct is not None and not pd.isna(spread_pct):
+        if spread_pct > 10:
+            return "PASS", "SKIP"
+
+    abs_score = abs(score)
+    if abs_score < 0.40:
+        return "PASS", "SKIP"
+
+    direction = "CALL" if score >= 0 else "PUT"
+
+    if abs_score < 0.70:
+        decision = direction
+        structure = "VERTICAL"
+    else:
+        decision = direction
+        structure = "NAKED"
+
+    if pct_iv_bump is not None and not pd.isna(pct_iv_bump):
+        if pct_iv_bump >= 0.80:
+            structure = "VERTICAL"
+
+    return decision, structure
 
 
 # ============================================================================

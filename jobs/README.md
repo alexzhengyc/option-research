@@ -45,6 +45,23 @@ This directory contains scheduled jobs and pipeline scripts.
 - Captures institutional positioning changes
 - ΔOI is a strong directional signal
 
+### ⭐ `intraday.py` - Intraday Nowcast (Stage 10)
+
+Live-loop job for the 12:00-12:55 PM PT window ahead of a BMO print:
+
+1. Loads the current trade day's universe from `eds.daily_signals`
+2. Re-snapshots the event expiry option chains from Polygon
+3. Recomputes the fast signals (RR, PCR, volume thrust, IV bump, spreads, momentum)
+4. Applies the intraday DirScore weights with EWMA smoothing (α≈0.3)
+5. Enforces Method.md guardrails (volume, spreads, IV cost) and persists to `eds.intraday_signals`
+
+**Features:**
+- ✅ Cross-sectional z-scores/percentiles every run
+- ✅ EWMA-smoothed DirScore alongside raw snapshot
+- ✅ Debit-spread vs. naked guidance + skip logic for wide spreads/low volume
+- ✅ Size reduction flag when the score whipsaws >0.4 in the prior sample
+- ✅ Designed for 5–15 minute cron cadence between 12:00 and 12:55 PM PT
+
 ### `daily_pipeline.py` - Legacy Pipeline
 
 Original daily pipeline (deprecated in favor of `post_close.py`):
@@ -72,6 +89,9 @@ python jobs/pre_market.py
 # Run pre-market job with score updates
 python jobs/pre_market.py --update-scores
 
+# Run intraday job (use cron every 5-15 minutes from 12:00-12:55 PM PT)
+python jobs/intraday.py --alpha 0.3
+
 # Run pre-market job for specific date (processes that date's events)
 python jobs/pre_market.py --date 2025-10-15
 ```
@@ -97,6 +117,9 @@ Schedule both jobs to run daily:
 
 # Pre-market job: Run at 8:30 AM ET (after OI posts)
 30 8 * * 1-5 cd /path/to/option-research && /path/to/venv/bin/python jobs/pre_market.py --update-scores >> /var/log/option-research-pre-market.log 2>&1
+
+# Intraday job: Run every 10 minutes between 12:00-12:55 PM PT
+*/10 12 * * 1-5 cd /path/to/option-research && /path/to/venv/bin/python jobs/intraday.py --alpha 0.3 >> /var/log/option-research-intraday.log 2>&1
 ```
 
 **Timing Rationale:**
