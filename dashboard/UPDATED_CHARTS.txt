@@ -1,0 +1,65 @@
+✅ CHARTS UPDATED TO TIME SERIES!
+
+Your dashboard now shows directional scores as LINE CHARTS over TIME.
+
+═══════════════════════════════════════════════════════════
+
+📊 NEW CHARTS:
+
+1. DIRECTIONAL SCORE OVER TIME
+   - X-axis: Time (HH:mm:ss)
+   - Y-axis: Dir Score (-1 to 1)
+   - Shows: Up to 8 symbols as colored lines
+   - Use: Track how scores evolve intraday
+
+2. EWMA DIRECTIONAL SCORE OVER TIME
+   - X-axis: Time (HH:mm:ss)
+   - Y-axis: EWMA Score (-1 to 1)
+   - Shows: Smoothed trend lines per symbol
+   - Use: See trends without noise
+
+3. LATEST DIRECTIONAL SCORES BY SYMBOL
+   - X-axis: Symbol names
+   - Y-axis: Score (-1 to 1)
+   - Shows: Current (solid) vs EWMA (dashed)
+   - Use: Quick snapshot of latest signals
+
+═══════════════════════════════════════════════════════════
+
+🎯 VIEW THE DASHBOARD:
+
+http://localhost:3000
+
+(Dashboard is already running!)
+
+═══════════════════════════════════════════════════════════
+
+💡 WHAT TO LOOK FOR:
+
+Rising Lines 📈  = Bullish momentum building
+Falling Lines 📉 = Bearish momentum building
+Flat Lines   ➡️  = Strong conviction maintained
+Choppy Lines 📊  = Wait for clarity
+
+═══════════════════════════════════════════════════════════
+
+📚 DOCUMENTATION:
+
+- Full details: CHART_UPDATE.md
+- Customization: Edit signals-chart.tsx
+- Color palette: 10 distinct colors for symbols
+
+═══════════════════════════════════════════════════════════
+
+✨ FEATURES:
+
+✓ Interactive tooltips (hover for exact values)
+✓ Time-sorted automatically
+✓ Multiple symbols per chart
+✓ Clean, modern design
+✓ Responsive layout
+
+═══════════════════════════════════════════════════════════
+
+Your intraday dashboard is ready! Refresh your browser if needed.
+

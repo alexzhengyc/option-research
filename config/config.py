@@ -33,7 +33,7 @@ TIMEZONE = os.getenv("TZ", "America/Los_Angeles")
 
 # Scoring thresholds
 SCORE_THRESHOLDS = {
-    "high_conviction": 0.7,
+    "high_conviction": 0.6,
     "medium_conviction": 0.4,
     "iv_percentile_naked": 60,
     "iv_percentile_vertical": 85,

@@ -119,7 +119,7 @@ class TestComputeDirscore:
         score, decision = compute_dirscore(row)
         
         assert score > 0  # Should be positive (bullish)
-        # May or may not cross 0.7 threshold depending on exact weights
+        # May or may not cross 0.6 threshold depending on exact weights
         assert decision in ['CALL', 'PASS_OR_SPREAD']
     
     def test_bearish_score(self):
@@ -136,7 +136,7 @@ class TestComputeDirscore:
         score, decision = compute_dirscore(row)
         
         assert score < 0  # Should be negative (bearish)
-        # May or may not cross -0.7 threshold
+        # May or may not cross -0.6 threshold
         assert decision in ['PUT', 'PASS_OR_SPREAD']
     
     def test_neutral_score(self):
@@ -153,7 +153,7 @@ class TestComputeDirscore:
         score, decision = compute_dirscore(row)
         
         # With all neutral signals, should be close to zero
-        assert abs(score) < 0.7
+        assert abs(score) < 0.6
         assert decision == 'PASS_OR_SPREAD'
     
     def test_high_iv_penalty(self):

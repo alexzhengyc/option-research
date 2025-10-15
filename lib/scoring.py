@@ -223,7 +223,7 @@ class DirectionalScorer:
         
         # Determine conviction
         abs_score = abs(dir_score)
-        if abs_score >= 0.7:
+        if abs_score >= 0.6:
             conviction = 'HIGH'
         elif abs_score >= 0.4:
             conviction = 'MEDIUM'
@@ -329,7 +329,7 @@ def resolve_intraday_decision(
 
     direction = "CALL" if score >= 0 else "PUT"
 
-    if abs_score < 0.70:
+    if abs_score < 0.60:
         decision = direction
         structure = "VERTICAL"
     else:
@@ -446,8 +446,8 @@ def compute_dirscore(
     - P2 (Spread): -0.05
     
     Decision thresholds:
-    - score >= 0.7: CALL
-    - score <= -0.7: PUT
+    - score >= 0.6: CALL
+    - score <= -0.6: PUT
     - otherwise: PASS_OR_SPREAD
     
     Args:
@@ -514,9 +514,9 @@ def compute_dirscore(
     )
     
     # Determine decision
-    if score >= 0.7:
+    if score >= 0.6:
         decision = "CALL"
-    elif score <= -0.7:
+    elif score <= -0.6:
         decision = "PUT"
     else:
         decision = "PASS_OR_SPREAD"

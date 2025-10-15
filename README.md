@@ -189,9 +189,9 @@ Score = 0.32×D1 + 0.28×D2 + 0.18×D3 + 0.12×D4 - 0.10×P1 - 0.05×P2
 - **P2** (-5%): Spread - Liquidity penalty
 
 **Decisions:**
-- `Score ≥ 0.7` → **CALL** (buy calls/spreads)
-- `Score ≤ -0.7` → **PUT** (buy puts/spreads)  
-- `-0.7 < Score < 0.7` → **PASS** (skip or complex structures)
+- `Score ≥ 0.6` → **CALL** (buy calls/spreads)
+- `Score ≤ -0.6` → **PUT** (buy puts/spreads)  
+- `-0.6 < Score < 0.6` → **PASS** (skip or complex structures)
 
 ## 📁 Project Structure
 

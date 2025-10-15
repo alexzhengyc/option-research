@@ -726,8 +726,48 @@ class IntradayJob:
         for decision, count in decision_counts.items():
             print(f"   - {decision}: {count}")
 
-        high_conviction = df_scored["dirscore_now"].abs() >= 0.7
-        print(f"   - High conviction (|score|≥0.7): {int(high_conviction.sum())}")
+        high_conviction = df_scored["dirscore_now"].abs() >= 0.6
+        print(f"   - High conviction (|score|≥0.6): {int(high_conviction.sum())}")
+
+        actionable = df_scored[df_scored["decision"].isin(["CALL", "PUT"])].copy()
+        if not actionable.empty:
+            actionable["abs_score"] = actionable["dirscore_now"].abs()
+            actionable = actionable.sort_values("abs_score", ascending=False)
+            cols = [
+                "symbol",
+                "dirscore_now",
+                "dirscore_ewma",
+                "decision",
+                "direction",
+                "structure",
+                "pct_iv_bump",
+                "spread_pct_atm",
+                "total_volume",
+                "spot_price",
+                "notes",
+            ]
+            cols = [c for c in cols if c in actionable.columns]
+            top_n = actionable.head(15)
+            print("\nTop actionable (by |score_now|):")
+            print(top_n[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+        else:
+            df_scored["abs_score"] = df_scored["dirscore_now"].abs()
+            fallback = df_scored.sort_values("abs_score", ascending=False)
+            cols = [
+                "symbol",
+                "dirscore_now",
+                "dirscore_ewma",
+                "decision",
+                "direction",
+                "structure",
+                "pct_iv_bump",
+                "spread_pct_atm",
+                "total_volume",
+                "spot_price",
+            ]
+            cols = [c for c in cols if c in fallback.columns]
+            print("\nNo actionable CALL/PUT signals. Highest |score_now| snapshots:")
+            print(fallback.head(10)[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
         return df_scored
 
