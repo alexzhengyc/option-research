@@ -8,6 +8,7 @@ import types
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, List
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -89,7 +90,7 @@ def job(monkeypatch):
         monkeypatch.setattr("jobs.intraday.SUPA", client)
         return IntradayJob(
             trade_date=date(2024, 5, 1),
-            asof_ts=datetime(2024, 5, 1, 12, 0),
+            asof_ts=datetime(2024, 5, 1, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
         )
 
     return _factory
@@ -98,9 +99,10 @@ def job(monkeypatch):
 def test_load_earnings_before_open_filters_after_open(job):
     """Only earnings scheduled before the bell should be included."""
 
+    pacific = ZoneInfo("America/Los_Angeles")
     rows = [
-        {"symbol": "EARLY", "earnings_ts": datetime(2024, 5, 2, 8, 0).isoformat()},
-        {"symbol": "LATE", "earnings_ts": datetime(2024, 5, 2, 10, 15).isoformat()},
+        {"symbol": "EARLY", "earnings_ts": datetime(2024, 5, 2, 6, 0, tzinfo=pacific).isoformat()},
+        {"symbol": "LATE", "earnings_ts": datetime(2024, 5, 2, 7, 15, tzinfo=pacific).isoformat()},
     ]
     intraday_job = job(rows)
 
@@ -114,16 +116,18 @@ def test_load_daily_universe_combines_after_close_and_pre_open(job, monkeypatch)
 
     intraday_job = job([])
 
+    pacific = ZoneInfo("America/Los_Angeles")
+
     today_data = pd.DataFrame(
         [
             {
                 "symbol": "TOD1",
-                "earnings_ts": pd.Timestamp("2024-05-01T16:15"),
+                "earnings_ts": pd.Timestamp("2024-05-01T13:15", tz=pacific),
                 "earnings_date": date(2024, 5, 1),
             },
             {
                 "symbol": "TOD2",
-                "earnings_ts": pd.Timestamp("2024-05-01T17:00"),
+                "earnings_ts": pd.Timestamp("2024-05-01T14:00", tz=pacific),
                 "earnings_date": date(2024, 5, 1),
             },
         ]
@@ -133,12 +137,12 @@ def test_load_daily_universe_combines_after_close_and_pre_open(job, monkeypatch)
         [
             {
                 "symbol": "TOM1",
-                "earnings_ts": pd.Timestamp("2024-05-02T08:30"),
+                "earnings_ts": pd.Timestamp("2024-05-02T05:30", tz=pacific),
                 "earnings_date": date(2024, 5, 2),
             },
             {
                 "symbol": "TOM2",
-                "earnings_ts": pd.Timestamp("2024-05-02T08:45"),
+                "earnings_ts": pd.Timestamp("2024-05-02T06:15", tz=pacific),
                 "earnings_date": date(2024, 5, 2),
             },
         ]
@@ -177,18 +181,20 @@ def test_load_daily_universe_filters_api_fallback(job, monkeypatch):
         lambda self, _date: empty_df,
     )
 
+    pacific = ZoneInfo("America/Los_Angeles")
+
     def _fake_fetch(self, target_date, _universe):
         if target_date == date(2024, 5, 1):
             return pd.DataFrame(
                 [
                     {
                         "symbol": "TOD_OK",
-                        "earnings_ts": pd.Timestamp("2024-05-01T16:10"),
+                        "earnings_ts": pd.Timestamp("2024-05-01T13:10", tz=pacific),
                         "earnings_date": date(2024, 5, 1),
                     },
                     {
                         "symbol": "TOD_TOO_EARLY",
-                        "earnings_ts": pd.Timestamp("2024-05-01T15:30"),
+                        "earnings_ts": pd.Timestamp("2024-05-01T12:30", tz=pacific),
                         "earnings_date": date(2024, 5, 1),
                     },
                 ]
@@ -198,12 +204,12 @@ def test_load_daily_universe_filters_api_fallback(job, monkeypatch):
                 [
                     {
                         "symbol": "TOM_OK",
-                        "earnings_ts": pd.Timestamp("2024-05-02T08:00"),
+                        "earnings_ts": pd.Timestamp("2024-05-02T05:55", tz=pacific),
                         "earnings_date": date(2024, 5, 2),
                     },
                     {
                         "symbol": "TOM_TOO_LATE",
-                        "earnings_ts": pd.Timestamp("2024-05-02T10:00"),
+                        "earnings_ts": pd.Timestamp("2024-05-02T07:00", tz=pacific),
                         "earnings_date": date(2024, 5, 2),
                     },
                 ]
