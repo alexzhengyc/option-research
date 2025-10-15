@@ -51,6 +51,11 @@ result = find_event_and_neighbors(earnings, expiries)
 # }
 ```
 
+> ℹ️ **After-close earnings:** If there is an expiry on the same calendar
+> day as the earnings release, it is treated as the *previous* expiry because
+> those contracts expire before the post-close announcement. The event expiry
+> will be the first contract that expires on or after the *next* trading day.
+
 ---
 
 ### `validate_event_expiries(event, prev, next, earnings_date, ...)`

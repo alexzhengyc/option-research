@@ -31,8 +31,8 @@ class TestFindEventAndNeighbors:
         assert result["next"] == date(2025, 11, 15)
     
     def test_earnings_on_expiry_date(self):
-        """Test when earnings falls exactly on an expiry date"""
-        earnings = datetime(2025, 11, 1, 16, 0)
+        """Before-open earnings on expiry date should use same-day expiry"""
+        earnings = datetime(2025, 11, 1, 9, 0)
         expiries = [
             date(2025, 10, 25),
             date(2025, 11, 1),
@@ -127,13 +127,29 @@ class TestFindEventAndNeighbors:
             date(2025, 10, 26),
             date(2025, 11, 1)
         ]
-        
+
         result = find_event_and_neighbors(earnings, expiries)
-        
+
         # Same-day expiry should be the event
         assert result["event"] == date(2025, 10, 26)
         assert result["prev"] == date(2025, 10, 25)
         assert result["next"] == date(2025, 11, 1)
+
+    def test_after_close_skips_same_day_expiry(self):
+        """After-close earnings should use the next expiry as the event"""
+        earnings = datetime(2025, 10, 26, 16, 0)  # After market close
+        expiries = [
+            date(2025, 10, 26),
+            date(2025, 10, 27),
+            date(2025, 10, 29)
+        ]
+
+        result = find_event_and_neighbors(earnings, expiries)
+
+        # Same-day expiry should count as the "prev", event should be next day
+        assert result["event"] == date(2025, 10, 27)
+        assert result["prev"] == date(2025, 10, 26)
+        assert result["next"] == date(2025, 10, 29)
 
 
 class TestValidateEventExpiries:
