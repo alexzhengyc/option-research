@@ -1,24 +1,18 @@
+# Environment variables
+.env
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# Distribution / packaging
 build/
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -28,10 +22,10 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+# Virtual environments
+venv/
+env/
+ENV/
 
 # IDE
 .vscode/
@@ -39,35 +33,15 @@ wheels/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
+
+# Output files
+out/*.csv
+out/*.json
+
+# Database
+db/*.db
+db/*.sqlite
 
 # OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# MyPy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Data files (optional - uncomment if needed)
-# data/
-# *.csv
-# *.xlsx
-
