@@ -39,9 +39,12 @@ from .signals import (
 from .scoring import (
     DirectionalScore,
     DirectionalScorer,
+    IntradayScore,
     normalize_today,
     compute_dirscore,
-    compute_scores_batch
+    compute_scores_batch,
+    compute_intraday_dirscore,
+    resolve_intraday_decision
 )
 
 __all__ = [
@@ -69,8 +72,11 @@ __all__ = [
     # Normalization and scoring (Dev Stage 7)
     "DirectionalScore",
     "DirectionalScorer",
+    "IntradayScore",
     "normalize_today",
     "compute_dirscore",
-    "compute_scores_batch"
+    "compute_scores_batch",
+    "compute_intraday_dirscore",
+    "resolve_intraday_decision",
 ]
 
