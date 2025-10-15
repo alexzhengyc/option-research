@@ -1,7 +1,7 @@
 """
 Event and expiry selection logic for earnings-based option strategies
 """
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
 from typing import List, Optional, Dict
 
 
@@ -45,6 +45,14 @@ def find_event_and_neighbors(
     """
     # Convert earnings timestamp to date for comparison
     earnings_date = earnings_ts.date()
+
+    # If earnings are after the market close, use the next calendar day
+    # when identifying the event expiry. Same-day expiries would have
+    # already settled before an after-close report, so they should be
+    # treated as the "prev" expiry instead of the event.
+    market_close = time(16, 0)
+    if earnings_ts.time() >= market_close:
+        earnings_date = earnings_date + timedelta(days=1)
     
     # Ensure expiries are sorted
     sorted_expiries = sorted(expiries)
