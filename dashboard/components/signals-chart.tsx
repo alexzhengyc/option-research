@@ -38,8 +38,19 @@ export function DirectionalScoreTimeSeriesChart({ signals }: SignalsChartProps) 
     new Date(a.asof_ts).getTime() - new Date(b.asof_ts).getTime()
   )
 
-  // Get unique symbols
-  const symbols = [...new Set(sortedSignals.map(s => s.symbol))].slice(0, 8) // Top 8 symbols
+  // Get top 7 symbols by highest absolute directional score (highest conviction)
+  const latestBySymbol = signals.reduce((acc, signal) => {
+    const existing = acc[signal.symbol]
+    if (!existing || new Date(signal.asof_ts) > new Date(existing.asof_ts)) {
+      acc[signal.symbol] = signal
+    }
+    return acc
+  }, {} as Record<string, IntradaySignal>)
+
+  const symbols = Object.values(latestBySymbol)
+    .sort((a, b) => Math.abs(b.dirscore_now || 0) - Math.abs(a.dirscore_now || 0))
+    .slice(0, 7)
+    .map(s => s.symbol)
 
   // Prepare data for line chart - one point per timestamp
   const timePoints = [...new Set(sortedSignals.map(s => s.asof_ts))]
@@ -64,7 +75,7 @@ export function DirectionalScoreTimeSeriesChart({ signals }: SignalsChartProps) 
       <CardHeader>
         <CardTitle>Directional Score Over Time</CardTitle>
         <CardDescription>
-          Track how directional scores evolve throughout the trading day
+          Top 7 tickers by highest conviction (absolute directional score)
         </CardDescription>
       </CardHeader>
       <CardContent className="pl-2">
@@ -117,8 +128,19 @@ export function EWMAScoreTimeSeriesChart({ signals }: SignalsChartProps) {
     new Date(a.asof_ts).getTime() - new Date(b.asof_ts).getTime()
   )
 
-  // Get unique symbols
-  const symbols = [...new Set(sortedSignals.map(s => s.symbol))].slice(0, 8) // Top 8 symbols
+  // Get top 7 symbols by highest absolute directional score
+  const latestBySymbol = signals.reduce((acc, signal) => {
+    const existing = acc[signal.symbol]
+    if (!existing || new Date(signal.asof_ts) > new Date(existing.asof_ts)) {
+      acc[signal.symbol] = signal
+    }
+    return acc
+  }, {} as Record<string, IntradaySignal>)
+
+  const symbols = Object.values(latestBySymbol)
+    .sort((a, b) => Math.abs(b.dirscore_now || 0) - Math.abs(a.dirscore_now || 0))
+    .slice(0, 7)
+    .map(s => s.symbol)
 
   // Prepare data for line chart
   const timePoints = [...new Set(sortedSignals.map(s => s.asof_ts))]
@@ -143,7 +165,7 @@ export function EWMAScoreTimeSeriesChart({ signals }: SignalsChartProps) {
       <CardHeader>
         <CardTitle>EWMA Directional Score Over Time</CardTitle>
         <CardDescription>
-          Exponentially weighted moving average of directional scores
+          Top 7 tickers - smoothed trend without intraday noise
         </CardDescription>
       </CardHeader>
       <CardContent className="pl-2">
@@ -208,8 +230,8 @@ export function SymbolComparisonChart({ signals }: SignalsChartProps) {
       decision: s.decision,
       time: format(new Date(s.asof_ts), 'HH:mm')
     }))
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, 12)
+    .sort((a, b) => Math.abs(b.score || 0) - Math.abs(a.score || 0))
+    .slice(0, 7)
 
   const getColor = (decision: string) => {
     switch (decision) {
@@ -227,7 +249,7 @@ export function SymbolComparisonChart({ signals }: SignalsChartProps) {
       <CardHeader>
         <CardTitle>Latest Directional Scores by Symbol</CardTitle>
         <CardDescription>
-          Most recent scores colored by decision (CALL/PUT/PASS)
+          Top 7 tickers by highest conviction - current vs EWMA comparison
         </CardDescription>
       </CardHeader>
       <CardContent className="pl-2">
