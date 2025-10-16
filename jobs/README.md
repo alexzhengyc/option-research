@@ -9,10 +9,10 @@ This directory contains scheduled jobs and pipeline scripts.
 **Recommended** - Complete post-close job with database persistence:
 
 1. Fetches upcoming earnings for universe (14 days ahead)
-2. Snapshots options chains to database (`eds.option_contracts`, `eds.option_snapshots`)
+2. Snapshots options chains to database (`public.option_contracts`, `public.option_snapshots`)
 3. Computes 8 core signals per event
 4. Normalizes and scores across all events
-5. Stores results to `eds.daily_signals`
+5. Stores results to `public.daily_signals`
 6. Exports predictions to `out/predictions_YYYYMMDD.csv`
 
 **Features:**
@@ -26,10 +26,10 @@ This directory contains scheduled jobs and pipeline scripts.
 
 **New** - Captures open interest deltas after OI posts (~8-9 AM ET):
 
-1. Fetches yesterday's earnings events from `eds.daily_signals`
+1. Fetches yesterday's earnings events from `public.daily_signals`
 2. Re-snapshots same option contracts (now with fresh OI data)
 3. Computes ΔOI (Delta Open Interest) for calls/puts within ATM ±2 strikes
-4. Inserts ΔOI data into `eds.oi_deltas` table
+4. Inserts ΔOI data into `public.oi_deltas` table
 5. Optionally recomputes DirScore with ΔOI folded into flow signals
 
 **Features:**
@@ -49,11 +49,11 @@ This directory contains scheduled jobs and pipeline scripts.
 
 Live-loop job for the 12:00-12:55 PM PT window ahead of a BMO print:
 
-1. Loads the current trade day's universe from `eds.daily_signals`
+1. Loads the current trade day's universe from `public.daily_signals`
 2. Re-snapshots the event expiry option chains from Polygon
 3. Recomputes the fast signals (RR, PCR, volume thrust, IV bump, spreads, momentum)
 4. Applies the intraday DirScore weights with EWMA smoothing (α≈0.3)
-5. Enforces Method.md guardrails (volume, spreads, IV cost) and persists to `eds.intraday_signals`
+5. Enforces Method.md guardrails (volume, spreads, IV cost) and persists to `public.intraday_signals`
 
 **Features:**
 - ✅ Cross-sectional z-scores/percentiles every run
@@ -375,7 +375,7 @@ Verify: curl "https://finnhub.io/api/v1/calendar/earnings?from=2025-10-15&to=202
 **Issue**: Database connection errors
 ```bash
 Solution: Verify SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
-Test: python -c "from lib.supa import SUPA; print(SUPA.table('eds.earnings_events').select('*').limit(1).execute())"
+Test: python -c "from lib.supa import SUPA; print(SUPA.table('public.earnings_events').select('*').limit(1).execute())"
 ```
 
 **Issue**: All signals are None
@@ -388,31 +388,31 @@ Debug: Enable debug logging in post_close.py
 
 ### Database Tables
 
-**`eds.earnings_events`**
+**`public.earnings_events`**
 ```
 symbol | earnings_ts
 AAPL   | 2025-10-26 16:00:00-07
 ```
 
-**`eds.option_contracts`**
+**`public.option_contracts`**
 ```
 option_symbol          | symbol | expiry     | strike | option_type
 O:AAPL251031C00150000  | AAPL   | 2025-10-31 | 150.00 | C
 ```
 
-**`eds.option_snapshots`**
+**`public.option_snapshots`**
 ```
 asof_ts              | option_symbol         | underlying_px | bid  | ask  | iv    | volume
 2025-10-15 16:30:00  | O:AAPL251031C00150000 | 148.50        | 5.20 | 5.40 | 0.321 | 1250
 ```
 
-**`eds.daily_signals`**
+**`public.daily_signals`**
 ```
 trade_date | symbol | event_expiry | rr_25d  | dirscore | decision
 2025-10-15 | AAPL   | 2025-10-31   | 0.0823  | 1.2543   | CALL
 ```
 
-**`eds.oi_deltas`** (from pre-market job)
+**`public.oi_deltas`** (from pre-market job)
 ```
 trade_date | symbol | event_expiry | d_oi_calls | d_oi_puts
 2025-10-15 | AAPL   | 2025-10-31   | 1250       | -800

@@ -7,7 +7,7 @@ export type Json =
   | Json[]
 
 export interface Database {
-  eds: {
+  public: {
     Tables: {
       intraday_signals: {
         Row: {
@@ -105,5 +105,5 @@ export interface Database {
   }
 }
 
-export type IntradaySignal = Database['eds']['Tables']['intraday_signals']['Row']
+export type IntradaySignal = Database['public']['Tables']['intraday_signals']['Row']
 

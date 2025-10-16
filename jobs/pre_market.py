@@ -5,10 +5,10 @@ Run after Polygon posts official open interest (typically pre-market the
 morning after the post-close run).
 
 Responsibilities:
-1. Pull the prior trade day's `eds.daily_signals`
+1. Pull the prior trade day's `public.daily_signals`
 2. Re-snapshot the event expiry chains for each symbol
-3. Compute ΔOI within ATM ±2 strikes and persist to `eds.oi_deltas`
-4. Re-run scoring with the new ΔOI inputs and refresh `eds.daily_signals`
+3. Compute ΔOI within ATM ±2 strikes and persist to `public.oi_deltas`
+4. Re-run scoring with the new ΔOI inputs and refresh `public.daily_signals`
 """
 import sys
 from pathlib import Path
@@ -83,7 +83,7 @@ class PreMarketJob:
         """
         print("\n1. Loading prior daily signals...")
         response = (
-            SUPA.schema("eds")
+            SUPA.schema("public")
             .table("daily_signals")
             .select("*")
             .eq("trade_date", self.trade_date.isoformat())
@@ -248,7 +248,7 @@ class PreMarketJob:
             return {}
 
         response = (
-            SUPA.schema("eds")
+            SUPA.schema("public")
             .table("option_snapshots")
             .select("option_symbol,oi,asof_ts")
             .in_("option_symbol", option_symbols)
@@ -273,7 +273,7 @@ class PreMarketJob:
         contracts: List[Dict],
     ) -> List[Dict]:
         """
-        Format contracts as rows for eds.option_snapshots.
+        Format contracts as rows for public.option_snapshots.
 
         Returns:
             List of dict rows ready for Supabase insert.
@@ -388,7 +388,7 @@ class PreMarketJob:
         snapshot_rows = self._prepare_snapshot_rows(call_contracts + put_contracts)
         if snapshot_rows:
             try:
-                upsert_rows("eds.option_snapshots", snapshot_rows)
+                upsert_rows("public.option_snapshots", snapshot_rows)
             except Exception as exc:  # pragma: no cover - supabase write
                 print(f"      Warning: snapshot insert failed ({exc})")
 
@@ -492,7 +492,7 @@ class PreMarketJob:
             )
 
         try:
-            upsert_rows("eds.daily_signals", rows, on_conflict="trade_date,symbol")
+            upsert_rows("public.daily_signals", rows, on_conflict="trade_date,symbol")
             print(f"\n   ✓ Updated DirScore for {len(rows)} rows")
         except Exception as exc:  # pragma: no cover - supabase write
             print(f"\n   ✗ Failed to update daily_signals: {exc}")
@@ -535,8 +535,8 @@ class PreMarketJob:
                 for item in successful
             ]
             try:
-                upsert_rows("eds.oi_deltas", rows, on_conflict="trade_date,symbol")
-                print(f"\n3. ✓ Wrote {len(rows)} ΔOI rows to eds.oi_deltas")
+                upsert_rows("public.oi_deltas", rows, on_conflict="trade_date,symbol")
+                print(f"\n3. ✓ Wrote {len(rows)} ΔOI rows to public.oi_deltas")
             except Exception as exc:  # pragma: no cover - supabase write
                 print(f"\n3. ✗ Failed to write ΔOI rows: {exc}")
         else:

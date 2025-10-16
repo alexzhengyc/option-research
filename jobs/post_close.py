@@ -1,15 +1,15 @@
 """
 Dev Stage 8 - Post-Close Job
 Run after market close to:
-1. Load universe + earnings today/tomorrow → upsert eds.earnings_events
+1. Load universe + earnings today/tomorrow → upsert public.earnings_events
 2. For each symbol with future earnings:
    - Pull expiries (event, prev, next)
    - Snapshot chain for these expiries
-   - Upsert eds.option_contracts
-   - Insert batch rows into eds.option_snapshots with single asof_ts
+   - Upsert public.option_contracts
+   - Insert batch rows into public.option_snapshots with single asof_ts
    - Aggregate and compute signals
    - Normalize & score
-   - Write one row to eds.daily_signals (trade_date = today)
+   - Write one row to public.daily_signals (trade_date = today)
 3. Export /out/predictions_YYYYMMDD.csv
 
 Usage:
@@ -126,7 +126,7 @@ class PostCloseJob:
     
     def upsert_earnings_to_db(self, earnings_events: List[Dict]) -> None:
         """
-        Upsert earnings events to eds.earnings_events
+        Upsert earnings events to public.earnings_events
         
         Args:
             earnings_events: List of earnings events
@@ -147,7 +147,7 @@ class PostCloseJob:
         
         try:
             result = upsert_rows(
-                table="eds.earnings_events",
+                table="public.earnings_events",
                 rows=rows,
                 on_conflict="symbol,earnings_ts"
             )
@@ -229,7 +229,7 @@ class PostCloseJob:
     
     def upsert_contracts_to_db(self, contracts: List[Dict]) -> None:
         """
-        Upsert option contracts to eds.option_contracts
+        Upsert option contracts to public.option_contracts
         
         Args:
             contracts: List of option contracts
@@ -271,7 +271,7 @@ class PostCloseJob:
         if rows:
             try:
                 upsert_rows(
-                    table="eds.option_contracts",
+                    table="public.option_contracts",
                     rows=rows,
                     on_conflict="option_symbol"
                 )
@@ -280,7 +280,7 @@ class PostCloseJob:
     
     def insert_snapshots_to_db(self, contracts: List[Dict]) -> None:
         """
-        Insert option snapshots to eds.option_snapshots
+        Insert option snapshots to public.option_snapshots
         
         Args:
             contracts: List of option contracts
@@ -337,7 +337,7 @@ class PostCloseJob:
         
         if rows:
             try:
-                insert_rows(table="eds.option_snapshots", rows=rows)
+                insert_rows(table="public.option_snapshots", rows=rows)
             except Exception as e:
                 print(f"      Warning: Error inserting snapshots: {e}")
     
@@ -452,7 +452,7 @@ class PostCloseJob:
     
     def write_signals_to_db(self, df_scored: pd.DataFrame) -> None:
         """
-        Write scored signals to eds.daily_signals
+        Write scored signals to public.daily_signals
         
         Args:
             df_scored: DataFrame with scored signals
@@ -487,7 +487,7 @@ class PostCloseJob:
         
         try:
             upsert_rows(
-                table="eds.daily_signals",
+                table="public.daily_signals",
                 rows=rows,
                 on_conflict="trade_date,symbol"
             )

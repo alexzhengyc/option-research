@@ -168,7 +168,7 @@ def test_recompute_dirscores_incorporates_delta_oi(job):
     # The recompute should persist refreshed scores back to Supabase
     assert stub.calls, "Expected recomputed scores to be upserted"
     last_call = stub.calls[-1]
-    assert last_call["table"] == "eds.daily_signals"
+    assert last_call["table"] == "public.daily_signals"
     assert last_call["on_conflict"] == "trade_date,symbol"
     stored_symbols = {entry["symbol"] for entry in last_call["rows"]}
     assert stored_symbols == {"AAA", "BBB"}

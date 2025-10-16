@@ -11,16 +11,14 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: false,
     autoRefreshToken: false,
     detectSessionInUrl: false
-  },
-  db: {
-    schema: 'eds'
   }
+  // Note: Using default 'public' schema - no need to specify
 })
 
 async function testConnection() {
   console.log('🔍 Testing Supabase connection...\n')
   console.log(`URL: ${supabaseUrl}`)
-  console.log(`Schema: eds\n`)
+  console.log(`Schema: public\n`)
 
   try {
     // Test query

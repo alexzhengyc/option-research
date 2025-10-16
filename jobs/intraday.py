@@ -4,7 +4,7 @@ Runs during the 12:00-12:55 PM PT window to refresh directional scores
 using only live, intraday inputs (no ΔOI). The job mirrors the playbook in
 ``Method.md`` by:
 
-1. Loading upcoming earnings events from ``eds.earnings_events``:
+1. Loading upcoming earnings events from ``public.earnings_events``:
    - Today's after-market-close earnings (>= 1:00 PM PT)
    - Tomorrow's pre-market earnings (<= 6:30 AM PT)
    - If not in database, fetches from Finnhub API and saves
@@ -14,7 +14,7 @@ using only live, intraday inputs (no ΔOI). The job mirrors the playbook in
 4. Cross-sectionally normalising the signals and computing the intraday
    DirScore weights
 5. Applying the guardrails/structure logic and storing the results in
-   ``eds.intraday_signals`` along with an EWMA-smoothed score
+   ``public.intraday_signals`` along with an EWMA-smoothed score
 """
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ class IntradayJob:
 
         print(f"   Checking database for {label} earnings...")
         response = (
-            SUPA.schema("eds")
+            SUPA.schema("public")
             .table("earnings_events")
             .select("symbol,earnings_ts")
             .gte("earnings_ts", start_ts.isoformat())
@@ -254,7 +254,7 @@ class IntradayJob:
 
             try:
                 upsert_rows(
-                    table="eds.earnings_events",
+                    table="public.earnings_events",
                     rows=rows_to_save,
                     on_conflict="symbol,earnings_ts"
                 )
@@ -526,7 +526,7 @@ class IntradayJob:
         """Fetch the most recent intraday record for the symbol."""
 
         response = (
-            SUPA.schema("eds")
+            SUPA.schema("public")
             .table("intraday_signals")
             .select("dirscore_now,dirscore_ewma,asof_ts")
             .eq("trade_date", self.trade_date.isoformat())
@@ -631,7 +631,7 @@ class IntradayJob:
         return pd.DataFrame(records)
 
     def persist_scores(self, df: pd.DataFrame) -> None:
-        """Write the intraday scores to ``eds.intraday_signals``."""
+        """Write the intraday scores to ``public.intraday_signals``."""
 
         if df.empty:
             print("\nNo intraday scores to persist.")
@@ -683,7 +683,7 @@ class IntradayJob:
             })
 
         try:
-            insert_rows("eds.intraday_signals", payload)
+            insert_rows("public.intraday_signals", payload)
             print("   ✓ Intraday scores stored")
         except Exception as exc:  # pragma: no cover - network/API
             print(f"   ✗ Error writing intraday scores: {exc}")

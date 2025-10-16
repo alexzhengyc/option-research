@@ -9,9 +9,7 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     persistSession: false,
     autoRefreshToken: false,
     detectSessionInUrl: false
-  },
-  db: {
-    schema: 'eds'
   }
+  // Note: Using default 'public' schema - no need to specify
 })
 
