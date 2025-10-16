@@ -6,9 +6,9 @@ Directional scoring model for call vs put trades
 __version__ = "0.1.0"
 
 # Export data provider functions
-from .finnhub_client import get_upcoming_earnings
+from .finnhub_client import get_upcoming_earnings, get_earnings_events
 from .polygon_client import (
-    get_expiries,
+    get_expiries,       
     get_chain_snapshot,
     get_underlying_agg,
     get_option_daily_oc
@@ -50,6 +50,7 @@ from .scoring import (
 __all__ = [
     # Data providers
     "get_upcoming_earnings",
+    "get_earnings_events",
     "get_expiries", 
     "get_chain_snapshot",
     "get_underlying_agg",
@@ -79,4 +80,3 @@ __all__ = [
     "compute_intraday_dirscore",
     "resolve_intraday_decision",
 ]
-

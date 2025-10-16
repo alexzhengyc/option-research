@@ -45,8 +45,8 @@ from lib.scoring import (  # noqa: E402
     compute_intraday_dirscore,
     resolve_intraday_decision,
 )
-from lib.supa import SUPA, insert_rows, upsert_rows  # noqa: E402
-from lib.finnhub_client import FinnhubClient  # noqa: E402
+from lib.supa import insert_rows  # noqa: E402
+from lib.finnhub_client import get_earnings_events
 from lib.events import find_event_and_neighbors  # noqa: E402
 import config  # noqa: E402  # pylint: disable=unused-import
 
@@ -122,260 +122,6 @@ class IntradayJob:
         print(f"Snapshot : {self.asof_ts.isoformat()}")
         print(f"EWMA α   : {self.ewma_alpha:.2f}")
 
-    def load_earnings_from_db(
-        self,
-        start_ts: datetime,
-        end_ts: datetime,
-        label: str,
-    ) -> pd.DataFrame:
-        """Load earnings events between ``start_ts`` (inclusive) and ``end_ts`` (exclusive)."""
-
-        print(f"   Checking database for {label} earnings...")
-        response = (
-            SUPA.schema("public")
-            .table("earnings_events")
-            .select("symbol,earnings_ts")
-            .gte("earnings_ts", start_ts.isoformat())
-            .lt("earnings_ts", end_ts.isoformat())
-            .execute()
-        )
-        data = response.data or []
-
-        if not data:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(data)
-        df = self._normalize_earnings_frame(df)
-        print(f"   ✓ Found {len(df)} {label} earnings in database")
-        return df
-
-    @staticmethod
-    def _localize_series_to_pacific(series: pd.Series) -> pd.Series:
-        """Ensure a datetime ``Series`` is represented in Pacific time."""
-
-        if series.dt.tz is None:
-            return series.dt.tz_localize(PACIFIC_TZ)
-        return series.dt.tz_convert(PACIFIC_TZ)
-
-    def _normalize_earnings_frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Convert ``earnings_ts`` to Pacific time and add ``earnings_date``."""
-
-        if df.empty:
-            return df
-
-        df = df.copy()
-        df["earnings_ts"] = pd.to_datetime(df["earnings_ts"], errors="coerce")
-        df = df.dropna(subset=["earnings_ts"])
-        if df.empty:
-            return df
-
-        df["earnings_ts"] = self._localize_series_to_pacific(df["earnings_ts"])
-        df["earnings_date"] = df["earnings_ts"].dt.date
-        return df
-
-    def fetch_and_save_earnings(self, target_date: date) -> pd.DataFrame:
-        """Fetch earnings from Finnhub and save to database."""
-        
-        print(f"   Fetching earnings from Finnhub for {target_date}...")
-        
-        try:
-            # Fetch from Finnhub using the same approach as the working example
-            client = FinnhubClient()
-            earnings_calendar = client.get_earnings_calendar(
-                start_date=target_date,
-                end_date=target_date
-            )
-
-            if not earnings_calendar:
-                print("   ✗ No earnings found from Finnhub")
-                return pd.DataFrame()
-
-            print(f"   ✓ Found {len(earnings_calendar)} earnings from Finnhub")
-
-            # Convert to DataFrame - keep the raw data
-            records = []
-            for event in earnings_calendar:
-                symbol = event.get("symbol")
-                earnings_date = event.get("date")  # Format: "YYYY-MM-DD"
-                earnings_hour = event.get("hour")  # Format: "bmo", "amc", or specific time
-                
-                if not symbol or not earnings_date:
-                    continue
-                
-                try:
-                    # Parse the date
-                    dt = datetime.strptime(earnings_date, "%Y-%m-%d")
-                    
-                    records.append({
-                        "symbol": symbol,
-                        "earnings_date": earnings_date,
-                        "earnings_hour": earnings_hour or "amc",  # Default to amc if not specified
-                        "date_obj": dt.date()
-                    })
-                except (ValueError, TypeError) as e:
-                    print(f"      Warning: Could not parse date for {symbol}: {earnings_date} - {e}")
-                    continue
-
-            if not records:
-                print("   ✗ Earnings fetched but no valid data")
-                return pd.DataFrame()
-
-            df = pd.DataFrame(records)
-            
-            # Save to database with converted timestamps
-            rows_to_save = []
-            for record in records:
-                dt = datetime.strptime(record["earnings_date"], "%Y-%m-%d")
-                earnings_hour = record["earnings_hour"]
-                
-                # Convert to timestamp for database storage
-                if earnings_hour == "bmo":
-                    dt = dt.replace(hour=9, minute=0)
-                elif earnings_hour == "amc":
-                    dt = dt.replace(hour=16, minute=0)
-                else:
-                    # Try to parse specific time if provided
-                    try:
-                        time_parts = earnings_hour.split(":")
-                        if len(time_parts) >= 2:
-                            dt = dt.replace(
-                                hour=int(time_parts[0]),
-                                minute=int(time_parts[1])
-                            )
-                        else:
-                            dt = dt.replace(hour=16, minute=0)
-                    except (ValueError, AttributeError):
-                        dt = dt.replace(hour=16, minute=0)
-                
-                rows_to_save.append({
-                    "symbol": record["symbol"],
-                    "earnings_ts": dt.isoformat(),
-                })
-
-            try:
-                upsert_rows(
-                    table="public.earnings_events",
-                    rows=rows_to_save,
-                    on_conflict="symbol,earnings_ts"
-                )
-                print(f"   ✓ Saved {len(rows_to_save)} earnings events to database")
-            except Exception as exc:
-                print(f"   ⚠ Warning: Could not save to database: {exc}")
-            
-            return df
-
-        except Exception as exc:
-            print(f"   ✗ Error fetching earnings: {exc}")
-            return pd.DataFrame()
-
-    def load_earnings_after_close_today(self) -> pd.DataFrame:
-        """Load today's after-market-close earnings (>= 1:00 PM PT)."""
-
-        print(f"   Checking for today's after-close earnings...")
-
-        # Market close is at 1:00 PM PT (16:00 ET)
-        start_ts = datetime.combine(self.trade_date, datetime.min.time()).replace(
-            hour=13,
-            minute=0,
-            tzinfo=PACIFIC_TZ,
-        )
-        end_ts = datetime.combine(
-            self.trade_date + timedelta(days=1),
-            datetime.min.time(),
-        ).replace(tzinfo=PACIFIC_TZ)
-
-        return self.load_earnings_from_db(start_ts, end_ts, "after-close today")
-
-    def load_earnings_before_open(self, target_date: date) -> pd.DataFrame:
-        """Load earnings scheduled before the market opens (<= 6:30 AM PT)."""
-
-        market_open = datetime.combine(target_date, datetime.min.time()).replace(
-            hour=6,
-            minute=30,
-            tzinfo=PACIFIC_TZ,
-        )
-        start_ts = datetime.combine(target_date, datetime.min.time()).replace(
-            tzinfo=PACIFIC_TZ,
-        )
-        return self.load_earnings_from_db(start_ts, market_open, "pre-open")
-
-    def load_daily_earnings(self) -> pd.DataFrame:
-        """
-        Load earnings events for intraday monitoring.
-
-        Strategy:
-        1. Load today's after-market-close earnings (>= 1:00 PM PT)
-        2. Load tomorrow's before-open earnings (< 6:30 AM PT)
-        3. If none found, fetch from Finnhub API and save to database
-        4. Return combined earnings events
-        """
-
-        tomorrow = self.trade_date + timedelta(days=1)
-        print(f"\n1. Loading earnings events (today after-close + tomorrow)...")
-        
-        # Load today's after-close earnings
-        df_today_amc = self.load_earnings_after_close_today()
-
-        # Load tomorrow's before-open earnings
-        df_tomorrow = self.load_earnings_before_open(tomorrow)
-
-        # If either window is empty, fall back to the Finnhub fetch just for that window
-        needs_today_fetch = df_today_amc.empty
-        needs_tomorrow_fetch = df_tomorrow.empty
-
-        if needs_today_fetch or needs_tomorrow_fetch:
-            print("   ⚠ Earnings missing in database, fetching from API...")
-
-            if needs_today_fetch:
-                df_today_fetched = self.fetch_and_save_earnings(self.trade_date)
-                if not df_today_fetched.empty:
-                    # Filter for after-market-close earnings
-                    df_today_fetched = df_today_fetched[
-                        df_today_fetched["earnings_hour"] == "amc"
-                    ].copy()
-                    if not df_today_fetched.empty:
-                        # Rename to match db schema
-                        df_today_fetched = df_today_fetched.rename(columns={"date_obj": "earnings_date"})
-                        df_today_amc = pd.concat([
-                            df_today_amc,
-                            df_today_fetched[["symbol", "earnings_date"]],
-                        ], ignore_index=True).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
-
-            if needs_tomorrow_fetch:
-                df_tomorrow_fetched = self.fetch_and_save_earnings(tomorrow)
-                if not df_tomorrow_fetched.empty:
-                    # Filter for before-market-open earnings
-                    df_tomorrow_fetched = df_tomorrow_fetched[
-                        df_tomorrow_fetched["earnings_hour"] == "bmo"
-                    ].copy()
-                    if not df_tomorrow_fetched.empty:
-                        # Rename to match db schema
-                        df_tomorrow_fetched = df_tomorrow_fetched.rename(columns={"date_obj": "earnings_date"})
-                        df_tomorrow = pd.concat([
-                            df_tomorrow,
-                            df_tomorrow_fetched[["symbol", "earnings_date"]],
-                        ], ignore_index=True).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
-
-        # Combine the dataframes after any fetches
-        if not df_today_amc.empty and not df_tomorrow.empty:
-            df = pd.concat([df_today_amc, df_tomorrow], ignore_index=True)
-            df = df.drop_duplicates(subset=["symbol"], keep="first")
-        elif not df_today_amc.empty:
-            df = df_today_amc
-        elif not df_tomorrow.empty:
-            df = df_tomorrow
-        else:
-            df = pd.DataFrame()
-        
-        if df.empty:
-            print("   ✗ No earnings events found")
-            return pd.DataFrame()
-
-        print(f"   ✓ Found {len(df)} earnings events")
-        
-        # For now, return symbol and earnings_date
-        # Event expiry will be determined when we snapshot
-        return df[["symbol", "earnings_date"]].copy()
 
     def _estimate_med20_volumes(self, symbol: str) -> Dict[str, float]:
         """Estimate 20-day baseline volumes using the Stage 8 heuristic."""
@@ -692,9 +438,17 @@ class IntradayJob:
     def run(self) -> pd.DataFrame:
         """Execute the intraday job end-to-end."""
 
-        earnings_events = self.load_daily_earnings()
-        if earnings_events.empty:
+        print("\n1. Loading earnings events (today after-close + tomorrow)...")
+        try:
+            earnings_events = get_earnings_events(self.trade_date)
+        except Exception as exc:  # pragma: no cover - external API/db
+            print(f"   ✗ Failed to load earnings events: {exc}")
             return pd.DataFrame()
+        if earnings_events.empty:
+            print("   ✗ No earnings events found")
+            return pd.DataFrame()
+
+        print(f"   ✓ Found {len(earnings_events)} earnings events")
 
         print("\n2. Re-snapshotting event expiries...")
         snapshots: List[IntradaySnapshot] = []

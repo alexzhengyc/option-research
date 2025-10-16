@@ -31,12 +31,12 @@ sys.path.insert(0, str(project_root / "config"))
 
 # Import library functions
 from lib import (
-    get_upcoming_earnings,
-    get_expiries,
     get_chain_snapshot,
-    filter_expiries_around_earnings,
     compute_all_signals,
-    compute_scores_batch
+    compute_scores_batch,
+    get_earnings_events,
+    get_expiries,
+    find_event_and_neighbors
 )
 from lib.supa import upsert_rows, insert_rows
 from lib.polygon_client import get_underlying_agg
@@ -95,90 +95,6 @@ class PostCloseJob:
         ]
         
         return universe
-    
-    def load_earnings_events(self, days_ahead: int = 1) -> List[Dict]:
-        """
-        Load earnings events for the next N days (0=today only, 1=today+tomorrow)
-        
-        Args:
-            days_ahead: Number of days to look ahead (default: 1 for today+tomorrow)
-        
-        Returns:
-            List of earnings events with symbol and earnings_ts
-        """
-        if days_ahead == 0:
-            print(f"\n1. Loading earnings events (today only)...")
-        else:
-            print(f"\n1. Loading earnings events (today + next {days_ahead} day(s))...")
-        
-        start = self.trade_date
-        end = self.trade_date + timedelta(days=days_ahead)
-        
-        earnings_events = get_upcoming_earnings(
-            symbols=self.universe,
-            start=start,
-            end=end
-        )
-        
-        print(f"   Found {len(earnings_events)} earnings events")
-        
-        return earnings_events
-    
-    def upsert_earnings_to_db(self, earnings_events: List[Dict]) -> None:
-        """
-        Upsert earnings events to public.earnings_events
-        
-        Args:
-            earnings_events: List of earnings events
-        """
-        if not earnings_events:
-            print("   No earnings events to upsert")
-            return
-        
-        print(f"\n2. Upserting {len(earnings_events)} earnings events to database...")
-        
-        # Format for database
-        rows = []
-        for event in earnings_events:
-            rows.append({
-                "symbol": event["symbol"],
-                "earnings_ts": event["earnings_ts"].isoformat()
-            })
-        
-        try:
-            result = upsert_rows(
-                table="public.earnings_events",
-                rows=rows,
-                on_conflict="symbol,earnings_ts"
-            )
-            print(f"   ✓ Upserted {len(rows)} earnings events")
-        except Exception as e:
-            print(f"   ✗ Error upserting earnings events: {e}")
-            raise
-    
-    def filter_tradeable_events(self, earnings_events: List[Dict]) -> List[Dict]:
-        """
-        Filter earnings events to those with tradeable expiries
-        
-        Args:
-            earnings_events: List of earnings events
-        
-        Returns:
-            List of enriched events with expiry information
-        """
-        print(f"\n3. Filtering for tradeable expiries...")
-        
-        # Use filter_expiries_around_earnings to find valid events
-        tradeable_events = filter_expiries_around_earnings(
-            earnings_events=earnings_events,
-            get_expiries_func=get_expiries,
-            max_event_dte=60,
-            require_neighbors=False  # Allow events without neighbors
-        )
-        
-        print(f"   Found {len(tradeable_events)} tradeable events")
-        
-        return tradeable_events
     
     def snapshot_options_chain(self, event: Dict) -> Dict[str, List[Dict]]:
         """
@@ -461,7 +377,7 @@ class PostCloseJob:
             print("   No signals to write")
             return
         
-        print(f"\n6. Writing {len(df_scored)} signals to database...")
+        print(f"\n5. Writing {len(df_scored)} signals to database...")
         
         # Format for database
         rows = []
@@ -507,7 +423,7 @@ class PostCloseJob:
             print("   No predictions to export")
             return
         
-        print(f"\n7. Exporting predictions to CSV...")
+        print(f"\n6. Exporting predictions to CSV...")
         
         # Select and format columns for export
         export_cols = [
@@ -558,35 +474,71 @@ class PostCloseJob:
         Returns:
             DataFrame with scored predictions
         """
-        print("=" * 70)
-        print("POST-CLOSE JOB - Dev Stage 8")
-        print("=" * 70)
         
-        # Step 1: Load earnings events
-        earnings_events = self.load_earnings_events(days_ahead=self.days_ahead)
-        
-        if not earnings_events:
-            print("\nNo earnings events found. Exiting.")
+        # Step 1: Load earnings events use the same as intraday trading
+        print("\n1. Loading earnings events (today after-close + tomorrow)...")
+        try:
+            earnings_events = get_earnings_events(self.trade_date)
+        except Exception as exc:  # pragma: no cover - external API/db
+            print(f"   ✗ Failed to load earnings events: {exc}")
+            return pd.DataFrame()
+        if earnings_events.empty:
+            print("   ✗ No earnings events found")
             return pd.DataFrame()
         
-        # Step 2: Upsert earnings to database
-        self.upsert_earnings_to_db(earnings_events)
+        print(f"   ✓ Found {len(earnings_events)} earnings events")
         
-        # Step 3: Filter for tradeable events
-        tradeable_events = self.filter_tradeable_events(earnings_events)
+        # Step 2: Enrich with expiries
+        print("\n2. Enriching events with option expiries...")
+        enriched_events = []
         
-        if not tradeable_events:
-            print("\nNo tradeable events found. Exiting.")
+        for _, row in earnings_events.iterrows():
+            symbol = row["symbol"]
+            earnings_ts = row["earnings_ts"]
+            earnings_date = row["earnings_date"]
+            
+            try:
+                # Get available expiries for this symbol
+                expiries = get_expiries(symbol)
+                
+                if not expiries:
+                    print(f"   - {symbol}: No expiries found, skipping")
+                    continue
+                
+                # Find event and neighbor expiries
+                expiry_dates = find_event_and_neighbors(earnings_ts, expiries)
+                
+                if not expiry_dates["event"]:
+                    print(f"   - {symbol}: No valid event expiry, skipping")
+                    continue
+                
+                # Build enriched event dict
+                event = {
+                    "symbol": symbol,
+                    "earnings_ts": earnings_ts,
+                    "earnings_date": earnings_date,
+                    "expiries": expiry_dates
+                }
+                enriched_events.append(event)
+                
+            except Exception as e:
+                print(f"   - {symbol}: Error getting expiries: {e}")
+                continue
+        
+        if not enriched_events:
+            print("   ✗ No events with valid expiries found")
             return pd.DataFrame()
         
-        # Step 4: Process each event
-        print(f"\n4. Processing {len(tradeable_events)} events...")
+        print(f"   ✓ Enriched {len(enriched_events)} events with expiries")
+        
+        # Step 3: Process each event
+        print(f"\n3. Processing {len(enriched_events)} events...")
         
         signals_list = []
         
-        for i, event in enumerate(tradeable_events, 1):
+        for i, event in enumerate(enriched_events, 1):
             symbol = event["symbol"]
-            print(f"\n   [{i}/{len(tradeable_events)}] Processing {symbol}...")
+            print(f"\n   [{i}/{len(enriched_events)}] Processing {symbol}...")
             
             try:
                 # Snapshot options chain
@@ -616,8 +568,8 @@ class PostCloseJob:
                 print(f"      ✗ Error processing {symbol}: {e}")
                 continue
         
-        # Step 5: Normalize and score
-        print(f"\n5. Normalizing and scoring {len(signals_list)} signals...")
+        # Step 4: Normalize and score
+        print(f"\n4. Normalizing and scoring {len(signals_list)} signals...")
         
         df_scored = self.normalize_and_score(signals_list)
         
@@ -627,10 +579,10 @@ class PostCloseJob:
         
         print(f"   ✓ Scored {len(df_scored)} events")
         
-        # Step 6: Write to database
+        # Step 5: Write to database
         self.write_signals_to_db(df_scored)
         
-        # Step 7: Export predictions CSV
+        # Step 6: Export predictions CSV
         self.export_predictions_csv(df_scored)
         
         print("\n" + "=" * 70)
@@ -687,4 +639,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
