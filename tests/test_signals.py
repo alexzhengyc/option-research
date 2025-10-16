@@ -123,6 +123,31 @@ class TestATMIV:
         # Should handle extraction or return None gracefully
         assert result is None or isinstance(result, float)
 
+    def test_accepts_legacy_strike_key(self):
+        """ATM IV should handle Polygon contracts with 'strike' key"""
+        contracts = [
+            {
+                "details": {"contract_type": "call", "strike": 149},
+                "implied_volatility": 0.31
+            },
+            {
+                "details": {"contract_type": "call", "strike": 151},
+                "implied_volatility": 0.33
+            },
+            {
+                "details": {"contract_type": "put", "strike": 149},
+                "implied_volatility": 0.32
+            },
+            {
+                "details": {"contract_type": "put", "strike": 151},
+                "implied_volatility": 0.34
+            }
+        ]
+
+        result = atm_iv(contracts, spot_price=150.0)
+        assert result is not None
+        assert 0.31 <= result <= 0.34
+
 
 class TestComputeRR25D:
     """Test 25-delta risk reversal computation"""
@@ -322,6 +347,25 @@ class TestComputeSpreadPctATM:
         result = compute_spread_pct_atm(contracts, spot_price=150.0)
         assert result is None
 
+    def test_spread_legacy_strike_key(self):
+        """Spread computation should handle 'strike' fallback"""
+        contracts = [
+            {
+                "details": {"strike": 149},
+                "last_quote": {"bid": 4.8, "ask": 5.2},
+                "underlying_asset": {"price": 150.0}
+            },
+            {
+                "details": {"strike": 151},
+                "last_quote": {"bid": 4.9, "ask": 5.1},
+                "underlying_asset": {"price": 150.0}
+            }
+        ]
+
+        result = compute_spread_pct_atm(contracts, spot_price=150.0)
+        assert result is not None
+        assert 4.0 <= result <= 10.0
+
 
 class TestComputeAllSignals:
     """Test comprehensive signal computation"""
@@ -374,4 +418,3 @@ class TestComputeAllSignals:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

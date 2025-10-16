@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -45,7 +46,7 @@ from lib.scoring import (  # noqa: E402
     compute_intraday_dirscore,
     resolve_intraday_decision,
 )
-from lib.supa import insert_rows  # noqa: E402
+from lib.supa import insert_rows, SUPA  # noqa: E402
 from lib.finnhub_client import get_earnings_events
 from lib.events import find_event_and_neighbors  # noqa: E402
 import config  # noqa: E402  # pylint: disable=unused-import
@@ -102,6 +103,7 @@ class IntradayJob:
         trade_date: Optional[date] = None,
         asof_ts: Optional[datetime] = None,
         ewma_alpha: float = 0.3,
+        max_workers: int = 4,
     ) -> None:
         pacific_now = datetime.now(PACIFIC_TZ)
 
@@ -114,6 +116,7 @@ class IntradayJob:
             else:
                 self.asof_ts = asof_ts.astimezone(PACIFIC_TZ)
         self.ewma_alpha: float = ewma_alpha
+        self.max_workers: int = max(1, max_workers)
 
         print("=" * 70)
         print("INTRADAY NOWCAST JOB - Dev Stage 10")
@@ -121,6 +124,7 @@ class IntradayJob:
         print(f"Trade date: {self.trade_date}")
         print(f"Snapshot : {self.asof_ts.isoformat()}")
         print(f"EWMA α   : {self.ewma_alpha:.2f}")
+        print(f"Workers  : {self.max_workers}")
 
 
     def _estimate_med20_volumes(self, symbol: str) -> Dict[str, float]:
@@ -267,6 +271,42 @@ class IntradayJob:
             put_volume=put_volume or None,
             total_volume=total_volume or None,
         )
+
+    def _build_snapshots_parallel(
+        self,
+        earnings_events: pd.DataFrame,
+    ) -> List[IntradaySnapshot]:
+        """Build snapshots in parallel to reduce end-to-end runtime."""
+
+        if earnings_events.empty:
+            return []
+
+        snapshots: List[Tuple[int, IntradaySnapshot]] = []
+        workers = max(1, min(self.max_workers, len(earnings_events)))
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_idx = {
+                executor.submit(
+                    self.build_intraday_snapshot,
+                    row.symbol,
+                    getattr(row, "earnings_date", None),
+                ): idx
+                for idx, row in enumerate(earnings_events.itertuples(index=False))
+            }
+
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    snapshot = future.result()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    print(f"   - Snapshot worker {idx} failed: {exc}")
+                    continue
+
+                if snapshot is not None:
+                    snapshots.append((idx, snapshot))
+
+        snapshots.sort(key=lambda item: item[0])
+        return [snapshot for _, snapshot in snapshots]
 
     def _fetch_previous_score(self, symbol: str) -> Dict[str, Optional[float]]:
         """Fetch the most recent intraday record for the symbol."""
@@ -451,16 +491,7 @@ class IntradayJob:
         print(f"   ✓ Found {len(earnings_events)} earnings events")
 
         print("\n2. Re-snapshotting event expiries...")
-        snapshots: List[IntradaySnapshot] = []
-        for _, row in earnings_events.iterrows():
-            symbol = row["symbol"]
-            # earnings_date is when the company reports, 
-            # event_expiry will be determined when we find the option chain
-            earnings_date = row.get("earnings_date")
-            snapshot = self.build_intraday_snapshot(symbol, earnings_date)
-            if snapshot is None:
-                continue
-            snapshots.append(snapshot)
+        snapshots = self._build_snapshots_parallel(earnings_events)
 
         if not snapshots:
             print("   ✗ No intraday signals computed")
@@ -549,6 +580,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=0.3,
         help="EWMA alpha (default 0.3)",
     )
+    parser.add_argument(
+        "--max-workers",
+        dest="max_workers",
+        type=int,
+        default=10,
+        help="Thread pool size for parallel snapshotting (default 4).",
+    )
     return parser.parse_args(argv)
 
 
@@ -562,6 +600,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         trade_date=trade_date,
         asof_ts=asof_ts,
         ewma_alpha=args.alpha,
+        max_workers=args.max_workers,
     )
     job.run()
 
